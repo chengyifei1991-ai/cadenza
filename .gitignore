@@ -1,0 +1,27 @@
+# Go build artifacts
+/bin/
+*.exe
+*.test
+*.out
+
+# Local module cache & toolchain (workspace-local, not for VCS)
+.gocache/
+.gopath/
+
+# Local environment (secrets)
+.env
+
+# Local database files
+*.db
+*.db-shm
+*.db-wal
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Obsidian workspace data (docs are tracked; local plugin caches are not)
+docs/.obsidian/workspace.json
+docs/.obsidian/workspace-mobile.json
