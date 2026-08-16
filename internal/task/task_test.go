@@ -100,6 +100,15 @@ func (f *fakeStore) AppendAudit(context.Context, *store.AuditLog) error         
 func (f *fakeStore) ListAudit(context.Context, int64) ([]store.AuditLog, error) {
 	return nil, nil
 }
+func (f *fakeStore) ListCollectorsPage(context.Context, int, int) ([]store.Collector, int64, error) {
+	return nil, 0, nil
+}
+func (f *fakeStore) ListTasksPage(context.Context, store.TaskStatus, int, int) ([]store.Task, int64, error) {
+	return nil, 0, nil
+}
+func (f *fakeStore) ListAuditPage(context.Context, int64, int, int) ([]store.AuditLog, int64, error) {
+	return nil, 0, nil
+}
 
 // TestServiceApproveReject 表驱动测试审批/拒绝的完整链路。
 func TestServiceApproveReject(t *testing.T) {

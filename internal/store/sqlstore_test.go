@@ -181,3 +181,117 @@ func TestSessionAndAgentRun(t *testing.T) {
 		t.Fatalf("UpdateAgentRun 失败: %v", err)
 	}
 }
+
+// TestListTasksPage 表驱动测试任务分页：总数、页内条数、过滤、越界页。
+func TestListTasksPage(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	now := time.Now().UTC()
+	// 插入 5 条任务：3 条 done，2 条 pending。
+	for i := 0; i < 5; i++ {
+		status := TaskStatusDone
+		if i >= 3 {
+			status = TaskStatusPending
+		}
+		tk := &Task{
+			ID: "page-task-" + string(rune('a'+i)), Type: TaskTypeGenerate, Status: status,
+			RequireApproval: true, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := st.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask(%d) 失败: %v", i, err)
+		}
+	}
+	tests := []struct {
+		name      string
+		status    TaskStatus
+		page      int
+		pageSize  int
+		wantTotal int64
+		wantLen   int
+	}{
+		{"全部第 1 页", "", 1, 2, 5, 2},
+		{"全部第 2 页", "", 2, 2, 5, 2},
+		{"全部第 3 页（余 1 条）", "", 3, 2, 5, 1},
+		{"越界页返回空", "", 9, 2, 5, 0},
+		{"按 done 过滤", TaskStatusDone, 1, 10, 3, 3},
+		{"按 pending 过滤", TaskStatusPending, 1, 10, 2, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items, total, err := st.ListTasksPage(ctx, tt.status, tt.page, tt.pageSize)
+			if err != nil {
+				t.Fatalf("ListTasksPage 失败: %v", err)
+			}
+			if total != tt.wantTotal {
+				t.Errorf("total = %d, want %d", total, tt.wantTotal)
+			}
+			if len(items) != tt.wantLen {
+				t.Errorf("len(items) = %d, want %d", len(items), tt.wantLen)
+			}
+		})
+	}
+}
+
+// TestListAuditPage 表驱动测试审计分页与 since 过滤。
+func TestListAuditPage(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	now := time.Now().UTC()
+	for i := 0; i < 4; i++ {
+		if err := st.AppendAudit(ctx, &AuditLog{Actor: "tester", Action: AuditActionApply,
+			Subject: "uid-x", Detail: "d", CreatedAt: now}); err != nil {
+			t.Fatalf("AppendAudit(%d) 失败: %v", i, err)
+		}
+	}
+	tests := []struct {
+		name      string
+		since     int64
+		page      int
+		pageSize  int
+		wantTotal int64
+		wantLen   int
+	}{
+		{"第 1 页", 0, 1, 3, 4, 3},
+		{"第 2 页（余 1 条）", 0, 2, 3, 4, 1},
+		{"since=2 后剩 2 条", 2, 1, 10, 2, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items, total, err := st.ListAuditPage(ctx, tt.since, tt.page, tt.pageSize)
+			if err != nil {
+				t.Fatalf("ListAuditPage 失败: %v", err)
+			}
+			if total != tt.wantTotal {
+				t.Errorf("total = %d, want %d", total, tt.wantTotal)
+			}
+			if len(items) != tt.wantLen {
+				t.Errorf("len(items) = %d, want %d", len(items), tt.wantLen)
+			}
+		})
+	}
+}
+
+// TestListCollectorsPage 验证 Collector 分页。
+func TestListCollectorsPage(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := st.UpsertCollector(ctx, &Collector{
+			InstanceUID: "page-uid-" + string(rune('0'+i)), LastSeenAt: now,
+			Status: CollectorStatusHealthy,
+		}); err != nil {
+			t.Fatalf("UpsertCollector(%d) 失败: %v", i, err)
+		}
+	}
+	items, total, err := st.ListCollectorsPage(ctx, 1, 2)
+	if err != nil {
+		t.Fatalf("ListCollectorsPage 失败: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("total = %d, want 3", total)
+	}
+	if len(items) != 2 {
+		t.Errorf("len(items) = %d, want 2", len(items))
+	}
+}

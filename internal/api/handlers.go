@@ -8,12 +8,58 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/chengyifei1991-ai/opamp-backend/internal/agent"
 	"github.com/chengyifei1991-ai/opamp-backend/internal/store"
 	"github.com/chengyifei1991-ai/opamp-backend/internal/task"
 )
+
+// maxPageSize 是分页 page_size 的上限，防止一次拉取全表。
+const maxPageSize = 100
+
+// defaultPageSize 是分页 page_size 的默认值。
+const defaultPageSize = 20
+
+// pageResponse 是分页模式下的统一响应结构。
+type pageResponse[T any] struct {
+	Items    []T   `json:"items"`
+	Total    int64 `json:"total"`
+	Page     int   `json:"page"`
+	PageSize int   `json:"page_size"`
+}
+
+// pageParams 解析分页参数。
+//
+// 返回 (page, pageSize, enabled, err)：
+//   - enabled=false 表示请求未携带任何分页参数（调用方应返回裸数组，保持向后兼容）；
+//   - enabled=true 时 page/pageSize 为合法解析值，err 非 nil 表示参数非法（调用方返回 400）。
+func pageParams(r *http.Request) (page, pageSize int, enabled bool, err error) {
+	q := r.URL.Query()
+	_, hasPage := q["page"]
+	_, hasSize := q["page_size"]
+	if !hasPage && !hasSize {
+		return 0, 0, false, nil
+	}
+	page = 1
+	if v := q.Get("page"); v != "" {
+		n, perr := strconv.Atoi(v)
+		if perr != nil || n < 1 {
+			return 0, 0, true, fmt.Errorf("page 必须为正整数")
+		}
+		page = n
+	}
+	pageSize = defaultPageSize
+	if v := q.Get("page_size"); v != "" {
+		n, perr := strconv.Atoi(v)
+		if perr != nil || n < 1 || n > maxPageSize {
+			return 0, 0, true, fmt.Errorf("page_size 必须在 1~%d 之间", maxPageSize)
+		}
+		pageSize = n
+	}
+	return page, pageSize, true, nil
+}
 
 // Handlers 聚合 REST handler 依赖。
 type Handlers struct {
@@ -107,13 +153,28 @@ func (h *Handlers) resolveSession(ctx context.Context, sessionID string) (*store
 
 // --- 任务 ---
 
-// ListTasks 处理 GET /api/v1/tasks?status=。
+// ListTasks 处理 GET /api/v1/tasks?status=&page=&page_size=。
+// 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。
 func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
 		return
 	}
 	status := store.TaskStatus(r.URL.Query().Get("status"))
+	page, pageSize, enabled, err := pageParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if enabled {
+		items, total, perr := h.store.ListTasksPage(r.Context(), status, page, pageSize)
+		if perr != nil {
+			writeError(w, http.StatusInternalServerError, "查询任务失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, pageResponse[store.Task]{Items: items, Total: total, Page: page, PageSize: pageSize})
+		return
+	}
 	tasks, err := h.store.ListTasks(r.Context(), status)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询任务失败")
@@ -191,10 +252,25 @@ func (h *Handlers) RejectTask(w http.ResponseWriter, r *http.Request, id string)
 
 // --- Collector 与审计 ---
 
-// ListCollectors 处理 GET /api/v1/collectors。
+// ListCollectors 处理 GET /api/v1/collectors?page=&page_size=。
+// 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。
 func (h *Handlers) ListCollectors(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	page, pageSize, enabled, err := pageParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if enabled {
+		items, total, perr := h.store.ListCollectorsPage(r.Context(), page, pageSize)
+		if perr != nil {
+			writeError(w, http.StatusInternalServerError, "查询 Collector 失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, pageResponse[store.Collector]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
 	collectors, err := h.store.ListCollectors(r.Context())
@@ -205,7 +281,8 @@ func (h *Handlers) ListCollectors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, collectors)
 }
 
-// ListAudit 处理 GET /api/v1/audit?since=。
+// ListAudit 处理 GET /api/v1/audit?since=&page=&page_size=。
+// 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。
 func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
@@ -213,6 +290,20 @@ func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	var since int64
 	fmt.Sscanf(r.URL.Query().Get("since"), "%d", &since)
+	page, pageSize, enabled, err := pageParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if enabled {
+		items, total, perr := h.store.ListAuditPage(r.Context(), since, page, pageSize)
+		if perr != nil {
+			writeError(w, http.StatusInternalServerError, "查询审计失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, pageResponse[store.AuditLog]{Items: items, Total: total, Page: page, PageSize: pageSize})
+		return
+	}
 	logs, err := h.store.ListAudit(r.Context(), since)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询审计失败")

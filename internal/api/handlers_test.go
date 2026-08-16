@@ -180,3 +180,131 @@ func TestListCollectorsAndAudit(t *testing.T) {
 		t.Errorf("tasks status = %d", rec.Code)
 	}
 }
+
+// TestListTasksPagination 表驱动测试任务列表的分页/裸数组/非法参数三种模式。
+func TestListTasksPagination(t *testing.T) {
+	h := newTestHandlers(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/tasks", h.ListTasks)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := h.store.CreateTask(ctx, &store.Task{
+			ID: "pgt-" + string(rune('a'+i)), Type: store.TaskTypeGenerate,
+			Status: store.TaskStatusDone, RequireApproval: true,
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateTask(%d) 失败: %v", i, err)
+		}
+	}
+	tests := []struct {
+		name     string
+		path     string
+		wantCode int
+		check    func(t *testing.T, body []byte)
+	}{
+		{
+			name: "无分页参数返回裸数组", path: "/api/v1/tasks",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, body []byte) {
+				if bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")) {
+					return
+				}
+				t.Errorf("无分页参数应返回裸数组，got: %s", body[:min(len(body), 80)])
+			},
+		},
+		{
+			name: "分页返回结构化", path: "/api/v1/tasks?page=1&page_size=2",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, body []byte) {
+				var resp struct {
+					Items    []store.Task `json:"items"`
+					Total    int64        `json:"total"`
+					Page     int          `json:"page"`
+					PageSize int          `json:"page_size"`
+				}
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("解析失败: %v, body: %s", err, body[:min(len(body), 120)])
+				}
+				if resp.Total != 3 || resp.Page != 1 || resp.PageSize != 2 || len(resp.Items) != 2 {
+					t.Errorf("分页响应不符: %+v", resp)
+				}
+			},
+		},
+		{
+			name: "仅 page_size 也触发分页", path: "/api/v1/tasks?page_size=10",
+			wantCode: http.StatusOK,
+			check: func(t *testing.T, body []byte) {
+				var resp pageResponse[store.Task]
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("应返回分页结构: %v", err)
+				}
+				if resp.Total != 3 || resp.Page != 1 || resp.PageSize != 10 {
+					t.Errorf("分页响应不符: %+v", resp)
+				}
+			},
+		},
+		{
+			name: "非法 page 返回 400", path: "/api/v1/tasks?page=abc",
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "非法 page_size 返回 400", path: "/api/v1/tasks?page_size=0",
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "page_size 超上限返回 400", path: "/api/v1/tasks?page_size=999",
+			wantCode: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := doJSON(t, mux, http.MethodGet, tt.path, nil)
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body: %s", rec.Code, tt.wantCode, rec.Body.String()[:min(rec.Body.Len(), 120)])
+			}
+			if tt.check != nil {
+				tt.check(t, rec.Body.Bytes())
+			}
+		})
+	}
+}
+
+// TestPageParams 表驱动测试分页参数解析边界。
+func TestPageParams(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		wantEnabled bool
+		wantPage    int
+		wantSize    int
+		wantErr     bool
+	}{
+		{"无参数", "", false, 0, 0, false},
+		{"仅 page", "page=3", true, 3, 20, false},
+		{"仅 page_size", "page_size=50", true, 1, 50, false},
+		{"两者齐全", "page=2&page_size=10", true, 2, 10, false},
+		{"page 非法", "page=0", true, 0, 0, true},
+		{"page 非数字", "page=x", true, 0, 0, true},
+		{"page_size 非法", "page_size=-1", true, 0, 0, true},
+		{"page_size 超上限", "page_size=101", true, 0, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?"+tt.query, nil)
+			page, size, enabled, err := pageParams(r)
+			if enabled != tt.wantEnabled {
+				t.Errorf("enabled = %v, want %v", enabled, tt.wantEnabled)
+			}
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if enabled && (page != tt.wantPage || size != tt.wantSize) {
+				t.Errorf("page=%d size=%d, want %d/%d", page, size, tt.wantPage, tt.wantSize)
+			}
+		})
+	}
+}

@@ -170,6 +170,31 @@ func (s *sqlStore) ListCollectors(ctx context.Context) ([]Collector, error) {
 	return out, rows.Err()
 }
 
+// ListCollectorsPage 分页返回 Collector 列表（按 instance_uid 升序）及总数。
+func (s *sqlStore) ListCollectorsPage(ctx context.Context, page, pageSize int) ([]Collector, int64, error) {
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM collectors`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT instance_uid, hostname, version, last_seen_at, status, effective_config, group_id
+		FROM collectors ORDER BY instance_uid LIMIT ? OFFSET ?`,
+		pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Collector, 0)
+	for rows.Next() {
+		c, err := scanCollector(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *c)
+	}
+	return out, total, rows.Err()
+}
+
 // rowScanner 抽象了 *sql.Row 与 *sql.Rows，避免重复扫描代码。
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -345,6 +370,39 @@ func (s *sqlStore) ListTasks(ctx context.Context, status TaskStatus) ([]Task, er
 	return out, rows.Err()
 }
 
+// ListTasksPage 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
+func (s *sqlStore) ListTasksPage(ctx context.Context, status TaskStatus, page, pageSize int) ([]Task, int64, error) {
+	where := ""
+	var args []any
+	if status != "" {
+		where = " WHERE status = ?"
+		args = append(args, string(status))
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `
+		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
+			approvers, approver, reject_reason, model_used, error, created_at, updated_at
+		FROM tasks` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Task, 0)
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *t)
+	}
+	return out, total, rows.Err()
+}
+
 func scanTask(sc rowScanner) (*Task, error) {
 	var (
 		t            Task
@@ -496,6 +554,45 @@ func (s *sqlStore) ListAudit(ctx context.Context, since int64) ([]AuditLog, erro
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// ListAuditPage 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
+func (s *sqlStore) ListAuditPage(ctx context.Context, since int64, page, pageSize int) ([]AuditLog, int64, error) {
+	where := ""
+	var args []any
+	if since > 0 {
+		where = " WHERE id > ?"
+		args = append(args, since)
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT id, actor, action, subject, detail, created_at FROM audit_logs` +
+		where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]AuditLog, 0)
+	for rows.Next() {
+		var (
+			a       AuditLog
+			created string
+		)
+		if err := rows.Scan(&a.ID, &a.Actor, &a.Action, &a.Subject, &a.Detail, &created); err != nil {
+			return nil, 0, err
+		}
+		ts, err := parseTime(created)
+		if err != nil {
+			return nil, 0, fmt.Errorf("parse created_at: %w", err)
+		}
+		a.CreatedAt = ts
+		out = append(out, a)
+	}
+	return out, total, rows.Err()
 }
 
 func boolInt(b bool) int {

@@ -115,12 +115,16 @@ MCP 端点：`http://<host>:8080/mcp`（streamable HTTP，`Accept: application/j
 |---|---|---|
 | POST | `/api/v1/sessions` | 创建会话 |
 | POST | `/api/v1/chat` | 对话（`{session_id, message}`） |
-| GET | `/api/v1/tasks?status=` | 任务列表 |
+| GET | `/api/v1/tasks?status=&page=&page_size=` | 任务列表（支持分页） |
 | GET | `/api/v1/tasks/{id}` | 任务详情 |
 | POST | `/api/v1/tasks/{id}/approve` | 审批并下发 |
 | POST | `/api/v1/tasks/{id}/reject` | 拒绝 |
-| GET | `/api/v1/collectors` | Collector 列表 |
-| GET | `/api/v1/audit?since=` | 审计日志 |
+| GET | `/api/v1/collectors?page=&page_size=` | Collector 列表（支持分页） |
+| GET | `/api/v1/audit?since=&page=&page_size=` | 审计日志（支持分页） |
+
+> **分页说明**：`page`（≥1，默认 1）、`page_size`（1~100，默认 20）。携带任一
+> 分页参数时返回 `{items, total, page, page_size}`（`total` 为过滤后总数，供前端
+> 渲染总页数）；不带分页参数时返回裸数组，向后兼容 MCP 与现有调用方。
 
 ## 🧪 测试
 

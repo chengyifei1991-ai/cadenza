@@ -21,6 +21,9 @@ type Store interface {
 	GetCollector(ctx context.Context, instanceUID string) (*Collector, error)
 	// ListCollectors 返回全部 Collector。
 	ListCollectors(ctx context.Context) ([]Collector, error)
+	// ListCollectorsPage 分页返回 Collector 列表（按 instance_uid 升序）及总数。
+	// page 从 1 开始，pageSize 为正整数。
+	ListCollectorsPage(ctx context.Context, page, pageSize int) (items []Collector, total int64, err error)
 
 	// UpsertGroup 插入或更新一个分组。
 	UpsertGroup(ctx context.Context, g *CollectorGroup) error
@@ -42,6 +45,9 @@ type Store interface {
 	GetTask(ctx context.Context, id string) (*Task, error)
 	// ListTasks 按状态过滤返回任务列表，status 为空返回全部。
 	ListTasks(ctx context.Context, status TaskStatus) ([]Task, error)
+	// ListTasksPage 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
+	// page 从 1 开始，pageSize 为正整数。
+	ListTasksPage(ctx context.Context, status TaskStatus, page, pageSize int) (items []Task, total int64, err error)
 
 	// CreateSession 创建会话。
 	CreateSession(ctx context.Context, s *ChatSession) error
@@ -59,6 +65,9 @@ type Store interface {
 	AppendAudit(ctx context.Context, a *AuditLog) error
 	// ListAudit 返回 since 之后（含）的审计记录，since 为零值返回全部。
 	ListAudit(ctx context.Context, since int64) ([]AuditLog, error)
+	// ListAuditPage 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
+	// page 从 1 开始，pageSize 为正整数。
+	ListAuditPage(ctx context.Context, since int64, page, pageSize int) (items []AuditLog, total int64, err error)
 }
 
 // ErrNotFound 表示查询的记录不存在。
