@@ -25,3 +25,4 @@
 # Obsidian workspace data (docs are tracked; local plugin caches are not)
 docs/.obsidian/workspace.json
 docs/.obsidian/workspace-mobile.json
+.build/

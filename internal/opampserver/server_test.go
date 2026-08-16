@@ -111,12 +111,19 @@ func TestCollectorFromMessage(t *testing.T) {
 	if c.Status != store.CollectorStatusHealthy {
 		t.Errorf("status = %q, want healthy", c.Status)
 	}
+
+	// 未上报 health 时状态应为 unknown。
+	msg.Health = nil
+	c = srv.collectorFromMessage("uid-1", msg)
+	if c.Status != store.CollectorStatusUnknown {
+		t.Errorf("status = %q, want unknown（health 未上报）", c.Status)
+	}
 	if c.EffectiveConfig == "" {
 		t.Errorf("effective config 未提取")
 	}
 
-	// 不健康状态。
-	msg.Health.Healthy = false
+	// 不健康状态（前面已置 nil，需重新赋值）。
+	msg.Health = &protobufs.ComponentHealth{Healthy: false}
 	c = srv.collectorFromMessage("uid-1", msg)
 	if c.Status != store.CollectorStatusUnhealthy {
 		t.Errorf("status = %q, want unhealthy", c.Status)

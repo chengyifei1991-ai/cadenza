@@ -2,6 +2,7 @@ package opampserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
@@ -123,7 +124,7 @@ func (s *Server) onMessage(ctx context.Context, conn types.Connection, msg *prot
 
 // collectorFromMessage 从 AgentToServer 提取 Collector 状态字段。
 func (s *Server) collectorFromMessage(uid string, msg *protobufs.AgentToServer) *store.Collector {
-	c := &store.Collector{InstanceUID: uid, Status: store.CollectorStatusHealthy}
+	c := &store.Collector{InstanceUID: uid, Status: store.CollectorStatusUnknown}
 	if prev, ok := s.reg.Get(uid); ok {
 		*c = *prev
 	}
@@ -149,10 +150,15 @@ func (s *Server) collectorFromMessage(uid string, msg *protobufs.AgentToServer) 
 			}
 		}
 	}
+	// 健康判定：明确上报才覆盖状态；未上报 health 时置为 unknown（连接在线但未知）。
 	if msg.Health != nil {
-		if !msg.Health.Healthy {
+		if msg.Health.Healthy {
+			c.Status = store.CollectorStatusHealthy
+		} else {
 			c.Status = store.CollectorStatusUnhealthy
 		}
+	} else {
+		c.Status = store.CollectorStatusUnknown
 	}
 	if msg.EffectiveConfig != nil && msg.EffectiveConfig.ConfigMap != nil {
 		c.EffectiveConfig = configMapToString(msg.EffectiveConfig.ConfigMap)
@@ -234,7 +240,9 @@ func (s *Server) PushConfig(ctx context.Context, instanceUID, yamlContent string
 }
 
 // remoteConfigOf 构造单文件 RemoteConfig 消息。
+// config_hash 为协议 MUST 必填字段（供 Agent 比对/回报），缺省会拒绝应用。
 func remoteConfigOf(yamlContent string) *protobufs.AgentRemoteConfig {
+	sum := sha256.Sum256([]byte(yamlContent))
 	return &protobufs.AgentRemoteConfig{
 		Config: &protobufs.AgentConfigMap{
 			ConfigMap: map[string]*protobufs.AgentConfigFile{
@@ -244,6 +252,7 @@ func remoteConfigOf(yamlContent string) *protobufs.AgentRemoteConfig {
 				},
 			},
 		},
+		ConfigHash: sum[:],
 	}
 }
 

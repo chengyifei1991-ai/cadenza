@@ -17,6 +17,8 @@ const (
 	CollectorStatusUnhealthy CollectorStatus = "unhealthy"
 	// CollectorStatusOffline 表示 Collector 超过阈值未上报。
 	CollectorStatusOffline CollectorStatus = "offline"
+	// CollectorStatusUnknown 表示尚未收到健康信号或无法判定（连接在线但 health 未上报）。
+	CollectorStatusUnknown CollectorStatus = "unknown"
 )
 
 // Collector 代表一个已接入的 OTel Collector 实例（OpAMP Agent）。

@@ -1,0 +1,48 @@
+# opamp-backend 容器化部署（docker compose / nerdctl compose 均可）
+# 用法：
+#   cp .env.example .env && vim .env   # 填入 LLM_API_KEY 等
+#   docker compose up -d               # 或 nerdctl compose up -d
+services:
+  opamp-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: opamp-backend:0.1.0
+    container_name: opamp-backend
+    restart: unless-stopped
+    ports:
+      # 对外暴露统一 HTTP 端口（OpAMP /v1/opamp + MCP /mcp + REST /api/v1）
+      - "8080:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      # 存储：容器内 SQLite，数据落命名卷
+      DB_DRIVER: "sqlite"
+      DB_SQLITE_PATH: "/data/opamp.db"
+      # Collector 接入认证（外部 Collector 需携带此 Bearer token）
+      OPAMP_AUTH_TOKEN: "${OPAMP_AUTH_TOKEN:-}"
+      # LLM（OpenAI 兼容，默认 DeepSeek）
+      LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com}"
+      LLM_API_KEY: "${LLM_API_KEY:?请在 .env 中配置 LLM_API_KEY}"
+      LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
+      # LLM 稳定性
+      LLM_TIMEOUT: "${LLM_TIMEOUT:-60s}"
+      LLM_RETRY: "${LLM_RETRY:-3}"
+      LLM_CIRCUIT_THRESHOLD: "${LLM_CIRCUIT_THRESHOLD:-5}"
+      # 配置校验（深度校验需容器内存在 otelcol-contrib，见下方卷挂载）
+      OTELCOL_BIN: "${OTELCOL_BIN:-/usr/local/bin/otelcol-contrib}"
+      STRICT_VALIDATE: "${STRICT_VALIDATE:-false}"
+      # 审批
+      REQUIRE_APPROVAL: "${REQUIRE_APPROVAL:-true}"
+    volumes:
+      - opamp-data:/data
+      # 可选：把宿主机的 otelcol-contrib v0.156.0 挂进容器启用深度校验
+      # - /usr/bin/otelcol-contrib:/usr/local/bin/otelcol-contrib:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/collectors"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  opamp-data:
