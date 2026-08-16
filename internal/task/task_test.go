@@ -65,8 +65,8 @@ func (f *fakeStore) GetTask(_ context.Context, id string) (*store.Task, error) {
 	}
 	return t, nil
 }
-func (f *fakeStore) ListTasks(_ context.Context, _ store.TaskStatus) ([]store.Task, error) {
-	return nil, nil
+func (f *fakeStore) ListTasks(_ context.Context, _ store.TaskStatus, _, _ int) ([]store.Task, int64, error) {
+	return nil, 0, nil
 }
 func (f *fakeStore) Close() error { return nil }
 func (f *fakeStore) UpsertCollector(context.Context, *store.Collector) error {
@@ -75,8 +75,8 @@ func (f *fakeStore) UpsertCollector(context.Context, *store.Collector) error {
 func (f *fakeStore) GetCollector(context.Context, string) (*store.Collector, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListCollectors(context.Context) ([]store.Collector, error) {
-	return nil, nil
+func (f *fakeStore) ListCollectors(context.Context, int, int) ([]store.Collector, int64, error) {
+	return nil, 0, nil
 }
 func (f *fakeStore) UpsertGroup(context.Context, *store.CollectorGroup) error { return nil }
 func (f *fakeStore) GetGroup(context.Context, string) (*store.CollectorGroup, error) {
@@ -86,8 +86,8 @@ func (f *fakeStore) ListGroups(context.Context) ([]store.CollectorGroup, error) 
 	return nil, nil
 }
 func (f *fakeStore) CreateConfigVersion(context.Context, *store.ConfigVersion) error { return nil }
-func (f *fakeStore) ListConfigVersions(context.Context, string) ([]store.ConfigVersion, error) {
-	return nil, nil
+func (f *fakeStore) ListConfigVersions(context.Context, string, int, int) ([]store.ConfigVersion, int64, error) {
+	return nil, 0, nil
 }
 func (f *fakeStore) CreateSession(context.Context, *store.ChatSession) error { return nil }
 func (f *fakeStore) GetSession(context.Context, string) (*store.ChatSession, error) {
@@ -97,16 +97,7 @@ func (f *fakeStore) AppendMessage(context.Context, string, store.ChatMessage) er
 func (f *fakeStore) CreateAgentRun(context.Context, *store.AgentRun) error          { return nil }
 func (f *fakeStore) UpdateAgentRun(context.Context, *store.AgentRun) error          { return nil }
 func (f *fakeStore) AppendAudit(context.Context, *store.AuditLog) error             { return nil }
-func (f *fakeStore) ListAudit(context.Context, int64) ([]store.AuditLog, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListCollectorsPage(context.Context, int, int) ([]store.Collector, int64, error) {
-	return nil, 0, nil
-}
-func (f *fakeStore) ListTasksPage(context.Context, store.TaskStatus, int, int) ([]store.Task, int64, error) {
-	return nil, 0, nil
-}
-func (f *fakeStore) ListAuditPage(context.Context, int64, int, int) ([]store.AuditLog, int64, error) {
+func (f *fakeStore) ListAudit(context.Context, int64, int, int) ([]store.AuditLog, int64, error) {
 	return nil, 0, nil
 }
 

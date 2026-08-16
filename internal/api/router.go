@@ -40,9 +40,11 @@ func (r *Router) Handler() http.Handler {
 	mux.Handle("/mcp", r.mcpHandler)
 	mux.HandleFunc("/api/v1/sessions", r.handlers.CreateSession)
 	mux.HandleFunc("/api/v1/chat", r.handlers.Chat)
+	mux.HandleFunc("/api/v1/tasks/rollback", r.handlers.RollbackTask)
 	mux.HandleFunc("/api/v1/tasks", r.handlers.ListTasks)
 	mux.HandleFunc("/api/v1/tasks/", r.taskAction)
 	mux.HandleFunc("/api/v1/collectors", r.handlers.ListCollectors)
+	mux.HandleFunc("/api/v1/collectors/", r.collectorAction)
 	mux.HandleFunc("/api/v1/audit", r.handlers.ListAudit)
 	return logMiddleware(r.logger, mux)
 }
@@ -70,6 +72,17 @@ func (r *Router) taskAction(w http.ResponseWriter, req *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "未知操作")
 	}
+}
+
+// collectorAction 分发 /api/v1/collectors/{uid}/versions。
+func (r *Router) collectorAction(w http.ResponseWriter, req *http.Request) {
+	parts := splitPath(req.URL.Path)
+	// 模式：/api/v1/collectors/{uid}/versions
+	if len(parts) == 5 && parts[4] == "versions" {
+		r.handlers.ListVersions(w, req, parts[3])
+		return
+	}
+	writeError(w, http.StatusNotFound, "未知路径")
 }
 
 // logMiddleware 记录请求日志。

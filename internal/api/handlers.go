@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chengyifei1991-ai/opamp-backend/internal/agent"
 	"github.com/chengyifei1991-ai/opamp-backend/internal/store"
 	"github.com/chengyifei1991-ai/opamp-backend/internal/task"
+	"github.com/chengyifei1991-ai/opamp-backend/internal/validator"
 )
 
 // maxPageSize 是分页 page_size 的上限，防止一次拉取全表。
@@ -167,7 +169,7 @@ func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if enabled {
-		items, total, perr := h.store.ListTasksPage(r.Context(), status, page, pageSize)
+		items, total, perr := h.store.ListTasks(r.Context(), status, page, pageSize)
 		if perr != nil {
 			writeError(w, http.StatusInternalServerError, "查询任务失败")
 			return
@@ -175,7 +177,7 @@ func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pageResponse[store.Task]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
-	tasks, err := h.store.ListTasks(r.Context(), status)
+	tasks, _, err := h.store.ListTasks(r.Context(), status, 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询任务失败")
 		return
@@ -265,7 +267,7 @@ func (h *Handlers) ListCollectors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if enabled {
-		items, total, perr := h.store.ListCollectorsPage(r.Context(), page, pageSize)
+		items, total, perr := h.store.ListCollectors(r.Context(), page, pageSize)
 		if perr != nil {
 			writeError(w, http.StatusInternalServerError, "查询 Collector 失败")
 			return
@@ -273,7 +275,7 @@ func (h *Handlers) ListCollectors(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pageResponse[store.Collector]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
-	collectors, err := h.store.ListCollectors(r.Context())
+	collectors, _, err := h.store.ListCollectors(r.Context(), 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询 Collector 失败")
 		return
@@ -296,7 +298,7 @@ func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if enabled {
-		items, total, perr := h.store.ListAuditPage(r.Context(), since, page, pageSize)
+		items, total, perr := h.store.ListAudit(r.Context(), since, page, pageSize)
 		if perr != nil {
 			writeError(w, http.StatusInternalServerError, "查询审计失败")
 			return
@@ -304,12 +306,103 @@ func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pageResponse[store.AuditLog]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
-	logs, err := h.store.ListAudit(r.Context(), since)
+	logs, _, err := h.store.ListAudit(r.Context(), since, 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询审计失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)
+}
+
+// --- 回滚与版本历史 ---
+
+// RollbackRequest 是回滚任务创建请求体。
+type RollbackRequest struct {
+	CollectorInstanceUID string `json:"collector_instance_uid"`
+	VersionID            int64  `json:"version_id"`
+}
+
+// RollbackTask 处理 POST /api/v1/tasks/rollback：
+// 取目标版本 YAML → 两级校验 → 创建回滚任务（awaiting_approval）。
+func (h *Handlers) RollbackTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	var req RollbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
+	if req.CollectorInstanceUID == "" || req.VersionID <= 0 {
+		writeError(w, http.StatusBadRequest, "collector_instance_uid 与 version_id 均为必填")
+		return
+	}
+	versions, _, err := h.store.ListConfigVersions(r.Context(), req.CollectorInstanceUID, 0, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询版本历史失败")
+		return
+	}
+	var target *store.ConfigVersion
+	for i := range versions {
+		if versions[i].ID == req.VersionID {
+			target = &versions[i]
+			break
+		}
+	}
+	if target == nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("版本 %d 不存在或不属于该 Collector", req.VersionID))
+		return
+	}
+	// 复用两级配置校验（yaml.v3 + otelcol-contrib v0.156.0）。
+	res := validator.Validate(target.YAML, h.deps.Config.OtelcolBin, h.deps.Config.StrictValidate)
+	if !res.Valid {
+		writeError(w, http.StatusBadRequest, "回滚版本校验未通过: "+strings.Join(res.Errors, "; "))
+		return
+	}
+	t := &store.Task{
+		ID:                agent.NewULID(),
+		Type:              store.TaskTypeRollback,
+		Status:            store.TaskStatusAwaitingApproval,
+		RequireApproval:   true,
+		Input:             fmt.Sprintf("回滚 %s 到版本 %d", req.CollectorInstanceUID, req.VersionID),
+		TargetInstanceUID: req.CollectorInstanceUID,
+		RollbackVersionID: req.VersionID,
+	}
+	if err := h.tasks.Create(r.Context(), t); err != nil {
+		writeError(w, http.StatusInternalServerError, "创建回滚任务失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, t)
+}
+
+// ListVersions 处理 GET /api/v1/collectors/{uid}/versions：
+// 分页返回该 Collector 的版本历史；携带分页参数返回信封，否则裸数组。
+func (h *Handlers) ListVersions(w http.ResponseWriter, r *http.Request, uid string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	page, pageSize, enabled, err := pageParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if enabled {
+		items, total, perr := h.store.ListConfigVersions(r.Context(), uid, page, pageSize)
+		if perr != nil {
+			writeError(w, http.StatusInternalServerError, "查询版本历史失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, pageResponse[store.ConfigVersion]{Items: items, Total: total, Page: page, PageSize: pageSize})
+		return
+	}
+	versions, _, err := h.store.ListConfigVersions(r.Context(), uid, 0, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询版本历史失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, versions)
 }
 
 // --- helpers ---

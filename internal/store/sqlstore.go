@@ -103,6 +103,59 @@ func (s *sqlStore) initSchema() error {
 			return fmt.Errorf("exec schema: %w", err)
 		}
 	}
+	// 幂等迁移：tasks 表新增回滚相关列（v1 配套）。
+	if err := s.ensureColumn("tasks", "target_instance_uid", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("tasks", "rollback_version_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureColumn 检查列是否存在，不存在则 ALTER TABLE ADD COLUMN（SQLite/MySQL 兼容）。
+func (s *sqlStore) ensureColumn(table, column, decl string) error {
+	var exists bool
+	if s.driver == "mysql" {
+		var count int
+		err := s.db.QueryRow(fmt.Sprintf(
+			`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '%s' AND column_name = '%s'`,
+			table, column)).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check column %s.%s: %w", table, column, err)
+		}
+		exists = count > 0
+	} else {
+		rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+		if err != nil {
+			return fmt.Errorf("check column %s.%s: %w", table, column, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				cid        int
+				name, ctyp string
+				notnull    int
+				dflt       any
+				pk         int
+			)
+			if err := rows.Scan(&cid, &name, &ctyp, &notnull, &dflt, &pk); err != nil {
+				return fmt.Errorf("scan pragma: %w", err)
+			}
+			if name == column {
+				exists = true
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	if !exists {
+		if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl)); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", table, column, err)
+		}
+	}
 	return nil
 }
 
@@ -151,35 +204,21 @@ func (s *sqlStore) GetCollector(ctx context.Context, instanceUID string) (*Colle
 	return scanCollector(row)
 }
 
-func (s *sqlStore) ListCollectors(ctx context.Context) ([]Collector, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT instance_uid, hostname, version, last_seen_at, status, effective_config, group_id
-		FROM collectors ORDER BY instance_uid`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]Collector, 0)
-	for rows.Next() {
-		c, err := scanCollector(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *c)
-	}
-	return out, rows.Err()
-}
-
-// ListCollectorsPage 分页返回 Collector 列表（按 instance_uid 升序）及总数。
-func (s *sqlStore) ListCollectorsPage(ctx context.Context, page, pageSize int) ([]Collector, int64, error) {
+// ListCollectors 分页返回 Collector 列表（按 instance_uid 升序）及总数。
+func (s *sqlStore) ListCollectors(ctx context.Context, page, pageSize int) ([]Collector, int64, error) {
 	var total int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM collectors`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 		SELECT instance_uid, hostname, version, last_seen_at, status, effective_config, group_id
-		FROM collectors ORDER BY instance_uid LIMIT ? OFFSET ?`,
-		pageSize, (page-1)*pageSize)
+		FROM collectors ORDER BY instance_uid`
+	var args []any
+	if pageSize > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, pageSize, (page-1)*pageSize)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -273,12 +312,25 @@ func (s *sqlStore) CreateConfigVersion(ctx context.Context, v *ConfigVersion) er
 	return nil
 }
 
-func (s *sqlStore) ListConfigVersions(ctx context.Context, instanceUID string) ([]ConfigVersion, error) {
-	rows, err := s.db.QueryContext(ctx, `
+// ListConfigVersions 分页返回某个 Collector 的配置版本历史（id 降序）及总数。
+func (s *sqlStore) ListConfigVersions(ctx context.Context, instanceUID string, page, pageSize int) ([]ConfigVersion, int64, error) {
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM config_versions WHERE collector_instance_uid = ?`, instanceUID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `
 		SELECT id, collector_instance_uid, yaml, hash, validated, created_at
-		FROM config_versions WHERE collector_instance_uid = ? ORDER BY id DESC`, instanceUID)
+		FROM config_versions WHERE collector_instance_uid = ? ORDER BY id DESC`
+	var args []any
+	args = append(args, instanceUID)
+	if pageSize > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, pageSize, (page-1)*pageSize)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := make([]ConfigVersion, 0)
@@ -289,17 +341,17 @@ func (s *sqlStore) ListConfigVersions(ctx context.Context, instanceUID string) (
 			valid   int
 		)
 		if err := rows.Scan(&v.ID, &v.CollectorInstanceUID, &v.YAML, &v.Hash, &valid, &created); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		ts, err := parseTime(created)
 		if err != nil {
-			return nil, fmt.Errorf("parse created_at: %w", err)
+			return nil, 0, fmt.Errorf("parse created_at: %w", err)
 		}
 		v.Validated = valid != 0
 		v.CreatedAt = ts
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 // ---- Tasks ----
@@ -311,11 +363,11 @@ func (s *sqlStore) CreateTask(ctx context.Context, t *Task) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, target_group_id,
-			approvers, approver, reject_reason, model_used, error, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML,
-		t.TargetGroupID, string(approvers), t.Approver, t.RejectReason, t.ModelUsed, t.Error,
-		fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt))
+		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver, t.RejectReason,
+		t.ModelUsed, t.Error, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt))
 	return err
 }
 
@@ -327,51 +379,24 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 	t.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, target_group_id=?,
-			approvers=?, approver=?, reject_reason=?, model_used=?, error=?, updated_at=?
+			target_instance_uid=?, rollback_version_id=?, approvers=?, approver=?, reject_reason=?, model_used=?, error=?, updated_at=?
 		WHERE id = ?`,
 		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML,
-		t.TargetGroupID, string(approvers), t.Approver, t.RejectReason, t.ModelUsed, t.Error,
-		fmtTime(t.UpdatedAt), t.ID)
+		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver,
+		t.RejectReason, t.ModelUsed, t.Error, fmtTime(t.UpdatedAt), t.ID)
 	return err
 }
 
 func (s *sqlStore) GetTask(ctx context.Context, id string) (*Task, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
-			approvers, approver, reject_reason, model_used, error, created_at, updated_at
+			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
 		FROM tasks WHERE id = ?`, id)
 	return scanTask(row)
 }
 
-func (s *sqlStore) ListTasks(ctx context.Context, status TaskStatus) ([]Task, error) {
-	query := `
-		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
-			approvers, approver, reject_reason, model_used, error, created_at, updated_at
-		FROM tasks`
-	var args []any
-	if status != "" {
-		query += " WHERE status = ?"
-		args = append(args, string(status))
-	}
-	query += " ORDER BY created_at DESC"
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]Task, 0)
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *t)
-	}
-	return out, rows.Err()
-}
-
-// ListTasksPage 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
-func (s *sqlStore) ListTasksPage(ctx context.Context, status TaskStatus, page, pageSize int) ([]Task, int64, error) {
+// ListTasks 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
+func (s *sqlStore) ListTasks(ctx context.Context, status TaskStatus, page, pageSize int) ([]Task, int64, error) {
 	where := ""
 	var args []any
 	if status != "" {
@@ -384,9 +409,12 @@ func (s *sqlStore) ListTasksPage(ctx context.Context, status TaskStatus, page, p
 	}
 	query := `
 		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
-			approvers, approver, reject_reason, model_used, error, created_at, updated_at
-		FROM tasks` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
-	args = append(args, pageSize, (page-1)*pageSize)
+			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
+		FROM tasks` + where + ` ORDER BY created_at DESC`
+	if pageSize > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, pageSize, (page-1)*pageSize)
+	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
@@ -411,8 +439,8 @@ func scanTask(sc rowScanner) (*Task, error) {
 		created, upd string
 	)
 	if err := sc.Scan(&t.ID, &t.Type, &t.Status, &reqApproval, &t.Input, &t.GeneratedYAML,
-		&t.TargetGroupID, &approvers, &t.Approver, &t.RejectReason, &t.ModelUsed, &t.Error,
-		&created, &upd); err != nil {
+		&t.TargetGroupID, &t.TargetInstanceUID, &t.RollbackVersionID, &approvers, &t.Approver,
+		&t.RejectReason, &t.ModelUsed, &t.Error, &created, &upd); err != nil {
 		return nil, mapNoRows(err)
 	}
 	if err := json.Unmarshal([]byte(approvers), &t.Approvers); err != nil {
@@ -524,40 +552,8 @@ func (s *sqlStore) AppendAudit(ctx context.Context, a *AuditLog) error {
 	return err
 }
 
-func (s *sqlStore) ListAudit(ctx context.Context, since int64) ([]AuditLog, error) {
-	query := `SELECT id, actor, action, subject, detail, created_at FROM audit_logs`
-	var args []any
-	if since > 0 {
-		query += " WHERE id > ?"
-		args = append(args, since)
-	}
-	query += " ORDER BY id DESC"
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]AuditLog, 0)
-	for rows.Next() {
-		var (
-			a       AuditLog
-			created string
-		)
-		if err := rows.Scan(&a.ID, &a.Actor, &a.Action, &a.Subject, &a.Detail, &created); err != nil {
-			return nil, err
-		}
-		ts, err := parseTime(created)
-		if err != nil {
-			return nil, fmt.Errorf("parse created_at: %w", err)
-		}
-		a.CreatedAt = ts
-		out = append(out, a)
-	}
-	return out, rows.Err()
-}
-
-// ListAuditPage 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
-func (s *sqlStore) ListAuditPage(ctx context.Context, since int64, page, pageSize int) ([]AuditLog, int64, error) {
+// ListAudit 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
+func (s *sqlStore) ListAudit(ctx context.Context, since int64, page, pageSize int) ([]AuditLog, int64, error) {
 	where := ""
 	var args []any
 	if since > 0 {
@@ -568,9 +564,11 @@ func (s *sqlStore) ListAuditPage(ctx context.Context, since int64, page, pageSiz
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT id, actor, action, subject, detail, created_at FROM audit_logs` +
-		where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
-	args = append(args, pageSize, (page-1)*pageSize)
+	query := `SELECT id, actor, action, subject, detail, created_at FROM audit_logs` + where + ` ORDER BY id DESC`
+	if pageSize > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, pageSize, (page-1)*pageSize)
+	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err

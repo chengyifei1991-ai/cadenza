@@ -19,12 +19,14 @@ import (
 
 // Deps 聚合工具集依赖，供 MCP Server 与内置对话 Agent 共用同一套实现。
 type Deps struct {
-	Store  store.Store
-	Tasks  *task.Service
-	OpAMP  *opampserver.Server
-	Model  model.Model
-	Config *config.Config
-	Logger *slog.Logger
+	Store store.Store
+	Tasks *task.Service
+	OpAMP *opampserver.Server
+	// Registry 用于下发成功后同步 Collector 生效配置（可为 nil）。
+	Registry *opampserver.Registry
+	Model    model.Model
+	Config   *config.Config
+	Logger   *slog.Logger
 	// Now 可注入以便测试；nil 时使用 time.Now。
 	Now func() time.Time
 }
@@ -134,7 +136,7 @@ func (d *Deps) targetCollectors(ctx context.Context, target string) ([]store.Col
 	if target == "" {
 		return nil, fmt.Errorf("target 不能为空")
 	}
-	all, err := d.Store.ListCollectors(ctx)
+	all, _, err := d.Store.ListCollectors(ctx, 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("查询 Collector 失败: %w", err)
 	}
@@ -153,7 +155,7 @@ func (d *Deps) targetCollectors(ctx context.Context, target string) ([]store.Col
 // handleListCollectors 实现 list_collectors。
 func (d *Deps) handleListCollectors(ctx context.Context, args map[string]any) (any, error) {
 	group := getString(args, "group")
-	all, err := d.Store.ListCollectors(ctx)
+	all, _, err := d.Store.ListCollectors(ctx, 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("查询 Collector 失败: %w", err)
 	}
@@ -400,6 +402,7 @@ func (d *Deps) handleApplyConfig(ctx context.Context, args map[string]any) (any,
 		if err := d.OpAMP.PushConfig(ctx, c.InstanceUID, yamlContent); err != nil {
 			d.log().Warn("apply_config 下发失败", "instance_uid", c.InstanceUID, "error", err)
 		}
+		d.recordConfigVersion(ctx, c.InstanceUID, yamlContent)
 	}
 	d.audit(ctx, "agent", store.AuditActionApply, target, validator.Hash(yamlContent))
 	return map[string]any{"message": fmt.Sprintf("已下发到 %d 个 Collector", len(collectors))}, nil
@@ -453,6 +456,11 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 		}
 		return map[string]any{"task_id": taskID, "status": string(store.TaskStatusDone), "message": "升级任务已审批（Beta 能力，需 Collector 支持包分发）"}, nil
 	}
+	// 回滚任务：下发目标历史版本。
+	if t.Type == store.TaskTypeRollback {
+		return d.dispatchRollback(ctx, t, approver)
+	}
+	// 常规任务（generate/optimize）：下发 GeneratedYAML。
 	if t.GeneratedYAML == "" {
 		return nil, fmt.Errorf("任务 %s 没有可下发的配置", taskID)
 	}
@@ -467,12 +475,76 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 		if err := d.OpAMP.PushConfig(ctx, c.InstanceUID, t.GeneratedYAML); err != nil {
 			d.log().Warn("approve 下发失败", "task_id", taskID, "instance_uid", c.InstanceUID, "error", err)
 		}
+		d.recordConfigVersion(ctx, c.InstanceUID, t.GeneratedYAML)
 	}
 	if _, err := d.Tasks.SetStatus(ctx, taskID, store.TaskStatusDone); err != nil {
 		return nil, err
 	}
 	d.audit(ctx, approver, store.AuditActionApply, taskID, validator.Hash(t.GeneratedYAML))
 	return map[string]any{"task_id": taskID, "status": string(store.TaskStatusDone), "message": fmt.Sprintf("已下发到 %d 个 Collector", len(collectors))}, nil
+}
+
+// dispatchRollback 处理回滚任务审批后的版本下发。
+func (d *Deps) dispatchRollback(ctx context.Context, t *store.Task, approver string) (any, error) {
+	if t.TargetInstanceUID == "" || t.RollbackVersionID == 0 {
+		return nil, fmt.Errorf("回滚任务缺少目标 Collector 或版本信息")
+	}
+	versions, _, err := d.Store.ListConfigVersions(ctx, t.TargetInstanceUID, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("查询版本历史失败: %w", err)
+	}
+	var target *store.ConfigVersion
+	for i := range versions {
+		if versions[i].ID == t.RollbackVersionID {
+			target = &versions[i]
+			break
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("回滚目标版本 %d 不存在", t.RollbackVersionID)
+	}
+	// 防御性校验归属（ListConfigVersions 已按 Collector 过滤）。
+	if target.CollectorInstanceUID != t.TargetInstanceUID {
+		return nil, fmt.Errorf("版本 %d 不属于该 Collector", t.RollbackVersionID)
+	}
+	if err := d.OpAMP.PushConfig(ctx, t.TargetInstanceUID, target.YAML); err != nil {
+		if _, setErr := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusFailed); setErr != nil {
+			d.log().Warn("标记任务失败状态出错", "task_id", t.ID, "error", setErr)
+		}
+		return nil, fmt.Errorf("回滚下发失败: %w", err)
+	}
+	d.recordConfigVersion(ctx, t.TargetInstanceUID, target.YAML)
+	if _, err := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusDone); err != nil {
+		return nil, err
+	}
+	d.audit(ctx, approver, store.AuditActionRollback, t.ID, validator.Hash(target.YAML))
+	return map[string]any{"task_id": t.ID, "status": string(store.TaskStatusDone), "message": "已回滚到历史版本"}, nil
+}
+
+// recordConfigVersion 下发成功后写入版本快照（回滚闭环地基），
+// 并同步注册表与持久层的生效配置（Collector 回传后会覆盖为真实值）。
+func (d *Deps) recordConfigVersion(ctx context.Context, instanceUID, yamlContent string) {
+	version := &store.ConfigVersion{
+		CollectorInstanceUID: instanceUID,
+		YAML:                 yamlContent,
+		Hash:                 validator.Hash(yamlContent),
+		Validated:            true,
+		CreatedAt:            d.now(),
+	}
+	if err := d.Store.CreateConfigVersion(ctx, version); err != nil {
+		d.log().Warn("写入版本快照失败", "instance_uid", instanceUID, "error", err)
+		return
+	}
+	if d.Registry != nil {
+		if c, ok := d.Registry.Get(instanceUID); ok {
+			c.EffectiveConfig = yamlContent
+			d.Registry.Upsert(c, nil)
+		}
+	}
+	if c, err := d.Store.GetCollector(ctx, instanceUID); err == nil {
+		c.EffectiveConfig = yamlContent
+		_ = d.Store.UpsertCollector(ctx, c)
+	}
 }
 
 // handleReject 实现 reject_task。
@@ -496,7 +568,7 @@ func (d *Deps) handleReject(ctx context.Context, args map[string]any) (any, erro
 
 // handleListPending 实现 list_pending_tasks。
 func (d *Deps) handleListPending(ctx context.Context, args map[string]any) (any, error) {
-	tasks, err := d.Store.ListTasks(ctx, store.TaskStatusAwaitingApproval)
+	tasks, _, err := d.Store.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("查询任务失败: %w", err)
 	}

@@ -117,9 +117,11 @@ MCP 端点：`http://<host>:8080/mcp`（streamable HTTP，`Accept: application/j
 | POST | `/api/v1/chat` | 对话（`{session_id, message}`） |
 | GET | `/api/v1/tasks?status=&page=&page_size=` | 任务列表（支持分页） |
 | GET | `/api/v1/tasks/{id}` | 任务详情 |
+| POST | `/api/v1/tasks/rollback` | 创建回滚任务 `{collector_instance_uid, version_id}` |
 | POST | `/api/v1/tasks/{id}/approve` | 审批并下发 |
 | POST | `/api/v1/tasks/{id}/reject` | 拒绝 |
 | GET | `/api/v1/collectors?page=&page_size=` | Collector 列表（支持分页） |
+| GET | `/api/v1/collectors/{uid}/versions?page=&page_size=` | 版本历史（每次下发自动快照） |
 | GET | `/api/v1/audit?since=&page=&page_size=` | 审计日志（支持分页） |
 
 > **分页说明**：`page`（≥1，默认 1）、`page_size`（1~100，默认 20）。携带任一

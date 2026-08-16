@@ -308,3 +308,88 @@ func TestPageParams(t *testing.T) {
 		})
 	}
 }
+
+// TestRollbackTask 表驱动测试回滚任务创建端点。
+func TestRollbackTask(t *testing.T) {
+	h := newTestHandlers(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/tasks/rollback", h.RollbackTask)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	// 准备版本历史。
+	for i := 0; i < 2; i++ {
+		if err := h.store.CreateConfigVersion(ctx, &store.ConfigVersion{
+			CollectorInstanceUID: "rollback-uid-1",
+			YAML:                 "receivers: {}\nservice:\n  pipelines:\n    traces:\n      receivers: [otlp]\n      exporters: [debug]\n",
+			Hash:                 "h" + string(rune('0'+i)), Validated: true, CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateConfigVersion(%d) 失败: %v", i, err)
+		}
+	}
+	tests := []struct {
+		name     string
+		body     any
+		wantCode int
+	}{
+		{"成功创建回滚任务", map[string]any{"collector_instance_uid": "rollback-uid-1", "version_id": 1}, http.StatusCreated},
+		{"版本不存在返回 400", map[string]any{"collector_instance_uid": "rollback-uid-1", "version_id": 99}, http.StatusBadRequest},
+		{"缺参数返回 400", map[string]any{"collector_instance_uid": ""}, http.StatusBadRequest},
+		{"非法 YAML 版本校验失败 400", map[string]any{"collector_instance_uid": "rollback-uid-1", "version_id": 0}, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := doJSON(t, mux, http.MethodPost, "/api/v1/tasks/rollback", tt.body)
+			if rec.Code != tt.wantCode {
+				t.Errorf("status = %d, want %d, body: %s", rec.Code, tt.wantCode, rec.Body.String()[:min(rec.Body.Len(), 100)])
+			}
+		})
+	}
+	// 成功创建的任务应处于 awaiting_approval 且带回滚字段。
+	tasks, _, _ := h.store.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
+	if len(tasks) != 1 {
+		t.Fatalf("应创建 1 个待审批回滚任务，got %d", len(tasks))
+	}
+	if tasks[0].Type != store.TaskTypeRollback || tasks[0].TargetInstanceUID != "rollback-uid-1" || tasks[0].RollbackVersionID != 1 {
+		t.Errorf("回滚任务字段不符: %+v", tasks[0])
+	}
+}
+
+// TestListVersions 验证版本历史端点（分页信封 + 裸数组）。
+func TestListVersions(t *testing.T) {
+	h := newTestHandlers(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/collectors/", func(w http.ResponseWriter, r *http.Request) {
+		parts := splitPath(r.URL.Path)
+		if len(parts) == 5 && parts[4] == "versions" {
+			h.ListVersions(w, r, parts[3])
+			return
+		}
+		writeError(w, http.StatusNotFound, "未知路径")
+	})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := h.store.CreateConfigVersion(ctx, &store.ConfigVersion{
+			CollectorInstanceUID: "ver-uid-1", YAML: "y", Hash: "h", Validated: true, CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateConfigVersion 失败: %v", err)
+		}
+	}
+	// 分页信封。
+	rec := doJSON(t, mux, http.MethodGet, "/api/v1/collectors/ver-uid-1/versions?page=1&page_size=2", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp pageResponse[store.ConfigVersion]
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if resp.Total != 3 || len(resp.Items) != 2 {
+		t.Errorf("分页信封不符: total=%d len=%d", resp.Total, len(resp.Items))
+	}
+	// 裸数组。
+	rec = doJSON(t, mux, http.MethodGet, "/api/v1/collectors/ver-uid-1/versions", nil)
+	if !bytes.HasPrefix(bytes.TrimSpace(rec.Body.Bytes()), []byte("[")) {
+		t.Errorf("无分页参数应返回裸数组: %s", rec.Body.String()[:min(rec.Body.Len(), 80)])
+	}
+}

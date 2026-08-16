@@ -53,7 +53,7 @@ func TestCollectorCRUD(t *testing.T) {
 		t.Errorf("GetCollector(不存在) err = %v, want ErrNotFound", err)
 	}
 	// 列表。
-	list, err := st.ListCollectors(ctx)
+	list, _, err := st.ListCollectors(ctx, 0, 0)
 	if err != nil || len(list) != 1 {
 		t.Errorf("ListCollectors = %v, err = %v", list, err)
 	}
@@ -100,11 +100,11 @@ func TestTaskCRUD(t *testing.T) {
 	if got.Status != TaskStatusAwaitingApproval {
 		t.Errorf("UpdateTask 未生效: %q", got.Status)
 	}
-	pending, err := st.ListTasks(ctx, TaskStatusAwaitingApproval)
+	pending, _, err := st.ListTasks(ctx, TaskStatusAwaitingApproval, 0, 0)
 	if err != nil || len(pending) != 1 {
 		t.Errorf("ListTasks(awaiting) = %v, err = %v", pending, err)
 	}
-	done, _ := st.ListTasks(ctx, TaskStatusDone)
+	done, _, _ := st.ListTasks(ctx, TaskStatusDone, 0, 0)
 	if len(done) != 0 {
 		t.Errorf("ListTasks(done) 应为空: %v", done)
 	}
@@ -125,7 +125,7 @@ func TestConfigVersionAndAudit(t *testing.T) {
 	if v.ID == 0 {
 		t.Errorf("CreateConfigVersion 应回填自增 ID")
 	}
-	versions, err := st.ListConfigVersions(ctx, "uid-1")
+	versions, _, err := st.ListConfigVersions(ctx, "uid-1", 0, 0)
 	if err != nil || len(versions) != 1 {
 		t.Errorf("ListConfigVersions = %v, err = %v", versions, err)
 	}
@@ -133,12 +133,12 @@ func TestConfigVersionAndAudit(t *testing.T) {
 	if err := st.AppendAudit(ctx, &AuditLog{Actor: "alice", Action: AuditActionApply, Subject: "uid-1", Detail: "hash", CreatedAt: now}); err != nil {
 		t.Fatalf("AppendAudit 失败: %v", err)
 	}
-	logs, err := st.ListAudit(ctx, 0)
+	logs, _, err := st.ListAudit(ctx, 0, 0, 0)
 	if err != nil || len(logs) != 1 {
 		t.Errorf("ListAudit = %v, err = %v", logs, err)
 	}
 	// since 过滤。
-	logs, _ = st.ListAudit(ctx, logs[0].ID)
+	logs, _, _ = st.ListAudit(ctx, logs[0].ID, 0, 0)
 	if len(logs) != 0 {
 		t.Errorf("since 过滤后应为空: %v", logs)
 	}
@@ -218,7 +218,7 @@ func TestListTasksPage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items, total, err := st.ListTasksPage(ctx, tt.status, tt.page, tt.pageSize)
+			items, total, err := st.ListTasks(ctx, tt.status, tt.page, tt.pageSize)
 			if err != nil {
 				t.Fatalf("ListTasksPage 失败: %v", err)
 			}
@@ -257,7 +257,7 @@ func TestListAuditPage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items, total, err := st.ListAuditPage(ctx, tt.since, tt.page, tt.pageSize)
+			items, total, err := st.ListAudit(ctx, tt.since, tt.page, tt.pageSize)
 			if err != nil {
 				t.Fatalf("ListAuditPage 失败: %v", err)
 			}
@@ -284,7 +284,7 @@ func TestListCollectorsPage(t *testing.T) {
 			t.Fatalf("UpsertCollector(%d) 失败: %v", i, err)
 		}
 	}
-	items, total, err := st.ListCollectorsPage(ctx, 1, 2)
+	items, total, err := st.ListCollectors(ctx, 1, 2)
 	if err != nil {
 		t.Fatalf("ListCollectorsPage 失败: %v", err)
 	}

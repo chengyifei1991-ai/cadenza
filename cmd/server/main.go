@@ -63,12 +63,13 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	deps := &agent.Deps{
-		Store:  st,
-		Tasks:  taskSvc,
-		OpAMP:  opampSrv,
-		Model:  llmModel,
-		Config: cfg,
-		Logger: logger,
+		Store:    st,
+		Tasks:    taskSvc,
+		OpAMP:    opampSrv,
+		Registry: registry,
+		Model:    llmModel,
+		Config:   cfg,
+		Logger:   logger,
 	}
 	orch := agent.NewOrchestrator(deps)
 

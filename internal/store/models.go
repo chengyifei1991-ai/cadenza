@@ -77,6 +77,8 @@ const (
 	TaskTypeApply TaskType = "apply"
 	// TaskTypeUpgrade 表示 Collector 版本升级任务。
 	TaskTypeUpgrade TaskType = "upgrade"
+	// TaskTypeRollback 表示配置回滚任务（目标为某历史版本）。
+	TaskTypeRollback TaskType = "rollback"
 )
 
 // TaskStatus 表示任务状态机的当前状态。
@@ -115,8 +117,12 @@ type Task struct {
 	Input string `json:"input"`
 	// GeneratedYAML 是生成/待下发的配置内容。
 	GeneratedYAML string `json:"generated_yaml"`
-	// TargetGroupID 是目标分组 ID。
+	// TargetGroupID 是目标分组 ID（generate/optimize 任务使用）。
 	TargetGroupID string `json:"target_group_id"`
+	// TargetInstanceUID 是目标 Collector 的 instance_uid（rollback/apply 任务使用）。
+	TargetInstanceUID string `json:"target_instance_uid,omitempty"`
+	// RollbackVersionID 是回滚目标版本 ID（非回滚任务为零值）。
+	RollbackVersionID int64 `json:"rollback_version_id,omitempty"`
 	// Approvers 是允许审批该任务的人员列表，预留扩展（当前为空表示任意审批人）。
 	Approvers []string `json:"approvers,omitempty"`
 	// Approver 是实际执行审批的人。
@@ -212,6 +218,8 @@ const (
 	AuditActionApply AuditAction = "apply"
 	// AuditActionUpgrade 表示版本升级。
 	AuditActionUpgrade AuditAction = "upgrade"
+	// AuditActionRollback 表示配置回滚。
+	AuditActionRollback AuditAction = "rollback"
 )
 
 // AuditLog 是审计记录，所有配置变更必须留痕。
