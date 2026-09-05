@@ -16,6 +16,7 @@ const CollectorDetailPage = lazy(() => import("./pages/CollectorDetailPage"));
 const CollectorEditPage = lazy(() => import("./pages/CollectorEditPage"));
 const TaskCenterPage = lazy(() => import("./pages/TaskCenterPage"));
 const TaskDetailPage = lazy(() => import("./pages/TaskDetailPage"));
+const AssistantPage = lazy(() => import("./pages/AssistantPage"));
 const AuditPage = lazy(() => import("./pages/AuditPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
@@ -61,16 +62,7 @@ function AppRoutes() {
           <Route path="tasks" element={<TaskCenterPage />} />
           <Route path="tasks/:id" element={<TaskDetailPage />} />
           <Route path="audit" element={<AuditPage />} />
-          <Route
-            path="assistant"
-            element={
-              <PlaceholderPage
-                title="AI 助手"
-                milestone="M3"
-                description="对话生成配置、会话历史与结果 diff"
-              />
-            }
-          />
+          <Route path="assistant" element={<AssistantPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<PlaceholderPage title="页面不存在" milestone="-" description="" status="404" />} />
         </Route>

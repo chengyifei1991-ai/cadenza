@@ -134,8 +134,17 @@ export const api = {
     if (params.page_size) q.set("page_size", String(params.page_size));
     return request<PageEnvelope<SessionSummary>>(`/api/v1/sessions?${q}`);
   },
+  createSession(): Promise<{ session_id: string }> {
+    return request("/api/v1/sessions", { method: "POST", body: {} });
+  },
   getSession(id: string): Promise<ChatSession> {
     return request<ChatSession>(`/api/v1/sessions/${id}`);
+  },
+  chat(sessionId: string | undefined, message: string): Promise<{ session_id: string; reply: string }> {
+    return request("/api/v1/chat", {
+      method: "POST",
+      body: sessionId ? { session_id: sessionId, message } : { message },
+    });
   },
   stats(): Promise<Stats> {
     return request<Stats>("/api/v1/stats");
