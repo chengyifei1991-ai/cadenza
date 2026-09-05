@@ -14,7 +14,7 @@
 | 组件库 | **Ant Design 5 + @ant-design/icons** | 表格/表单/审批流/Tag/Result 全覆盖，中文文档成熟 |
 | 服务端状态 | **@tanstack/react-query** | 列表缓存、任务轮询（refetchInterval）、突变后失效（approve/chat 后刷新） |
 | 客户端状态 | 轻量（context/auth 模块） | 仅登录态与全局提示，不引重型状态库 |
-| 配置编辑器 | **Monaco Editor（yaml 语言）** | YAML 语法高亮 + 错误标记 + 内置 diff，编辑器与 diff 同一心智模型 |
+| 配置编辑器 | **轻量方案（M2 已定）**：文本域 + `js-yaml` 语法预检 + `jsdiff` 行级 diff | 原因：单二进制离线部署下 Monaco 的 worker/CDN 自托管成本高；权威校验在服务端两级。后续可按需升级 Monaco（同一 DiffView 心智） |
 | 图表 | **recharts**（Dashboard 极简图表） | 体积可控，AntD 体系内无强绑定 |
 | API 契约 | **openapi-typescript 生成类型** + 手写薄 fetch 封装 | 契约先行防漂移（见 §3） |
 | 测试 | Vitest（组件/工具）+ **Playwright**（M4 冒烟 E2E） | 见 §9 |
@@ -101,14 +101,14 @@ cadenza/
 - 验收：回滚按钮对当前生效版本禁用；确认弹窗措辞含"将重新下发历史配置"。
 
 ### 5.6 配置编辑器（M2，核心页）
-- 数据源：Collector 当前配置装载入 Monaco（yaml 模式）；只读目标与可编辑副本分离。
+- 数据源：Collector 当前生效配置装载入编辑区（M2 落地为文本域；升级路径见 §1 选型变更）。
 - 交互：编辑 → 本地格式/语法预检 → **"保存并下发"** → `POST /tasks/apply`（note 可填）→ 校验错误行内标记或列表展示 → 成功跳任务详情等待审批。
 - 验收：编辑-提交-审批-下发-回滚全链路可点通；服务端 400 校验错误能映射回 YAML 行号提示（尽力而为，错误列表兜底）；LLM 故障时本页**完全可用**（操作面与 AI 面解耦的实证）。
 
 ### 5.7 任务中心（M2）+ 任务详情
 - 列表：状态筛选（含"待我审批"快捷）、类型 Tag（generate/optimize/apply/rollback/upgrade）、时间、目标；分页。
 - 详情：元信息卡（状态机时间线、类型、目标、审批人/拒绝原因/错误/ModelUsed）；**变更内容区**：
-  - generate/optimize/apply：`GeneratedYAML` 与目标当前配置的 **diff 视图**（Monaco diff，只读）；
+  - generate/optimize/apply：`GeneratedYAML` 与目标当前生效配置的 **diff 视图**（`DiffView` 行级，只读）；
   - rollback：回滚目标版本号与说明；
   - 操作区：`awaiting_approval` 且 `require_approval` → 通过（附审批人=当前用户）/ 拒绝（必填原因）。
 - 验收：审批/拒绝后列表与详情即时刷新；`done`/`failed` 有终端可读态（含错误文案与"重试"入口 → 重新生成/再次提交）。
@@ -143,8 +143,8 @@ cadenza/
 
 ## 7. 复用组件清单
 
-`StatusTag`（Collector/Task 状态映射唯一源）、`PageTable`（分页信封封装）、`DiffView`（Monaco diff）、
-`YamlEditor`（Monaco + 只读/可编辑态）、`EmptyState`、`ErrorResult`、`ConfirmDialog`、`TimeAgo`、
+`StatusTag`（Collector/Task/审计动作状态映射唯一源）、`PageTable`（分页信封封装）、`DiffView`（jsdiff 行级）、
+`EmptyState`、`ErrorResult`、`ConfirmDialog`、`TimeAgo`、
 `AuthGuard`、`PollBadge`（连接/刷新指示）。
 
 ## 8. 文案与主题

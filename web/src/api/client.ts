@@ -108,6 +108,18 @@ export const api = {
   rejectTask(id: string, reason: string): Promise<unknown> {
     return request(`/api/v1/tasks/${id}/reject`, { method: "POST", body: { reason } });
   },
+  rollbackTask(collectorInstanceUid: string, versionId: number): Promise<Task> {
+    return request<Task>("/api/v1/tasks/rollback", {
+      method: "POST",
+      body: { collector_instance_uid: collectorInstanceUid, version_id: versionId },
+    });
+  },
+  applyTask(collectorInstanceUid: string, yaml: string, note?: string): Promise<Task> {
+    return request<Task>("/api/v1/tasks/apply", {
+      method: "POST",
+      body: { collector_instance_uid: collectorInstanceUid, yaml, note },
+    });
+  },
 
   // 审计 / 会话 / 统计
   listAudit(params: ListParams = {}): Promise<PageEnvelope<AuditLog>> {

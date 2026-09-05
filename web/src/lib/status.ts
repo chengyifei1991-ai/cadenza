@@ -26,3 +26,12 @@ export const TASK_TYPE_LABEL: Record<string, string> = {
   rollback: "回滚",
   upgrade: "升级",
 };
+
+export const AUDIT_ACTION: Record<string, { label: string; color: string }> = {
+  generate: { label: "生成", color: "blue" },
+  approve: { label: "审批通过", color: "green" },
+  reject: { label: "拒绝", color: "red" },
+  apply: { label: "下发", color: "purple" },
+  upgrade: { label: "升级", color: "orange" },
+  rollback: { label: "回滚", color: "geekblue" },
+};

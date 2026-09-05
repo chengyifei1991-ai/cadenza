@@ -1,0 +1,96 @@
+// 任务中心（M2）：状态筛选 + 服务端分页 + 10s 轮询；行点击进详情（审批/回滚跟踪）。
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { Card, Select, Table, Tag, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
+import { api } from "../api/client";
+import type { Task, TaskStatus } from "../api/types";
+import { TASK_STATUS, TASK_TYPE_LABEL } from "../lib/status";
+import { fmtAgo } from "../lib/time";
+
+const PAGE_SIZE = 10;
+
+export default function TaskCenterPage() {
+  const navigate = useNavigate();
+  const [status, setStatus] = useState<TaskStatus | "">("");
+  const [page, setPage] = useState(1);
+
+  const query = useQuery({
+    queryKey: ["tasks", status, page],
+    queryFn: () => api.listTasks({ status: status || undefined, page, page_size: PAGE_SIZE }),
+    refetchInterval: 10_000,
+  });
+
+  const data = query.data;
+  const columns: ColumnsType<Task> = [
+    {
+      title: "类型",
+      dataIndex: "type",
+      width: 80,
+      render: (t: Task["type"]) => <Tag>{TASK_TYPE_LABEL[t] ?? t}</Tag>,
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 110,
+      render: (s: TaskStatus) => (
+        <Tag color={TASK_STATUS[s]?.color}>{TASK_STATUS[s]?.label ?? s}</Tag>
+      ),
+    },
+    { title: "说明", dataIndex: "input", ellipsis: true },
+    {
+      title: "目标",
+      dataIndex: "target_group_id",
+      width: 190,
+      ellipsis: true,
+      render: (g: string) => g || "-",
+    },
+    { title: "审批人", dataIndex: "approver", width: 100, render: (a?: string) => a || "-" },
+    { title: "创建", dataIndex: "created_at", width: 130, render: fmtAgo },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>
+          任务中心
+        </Typography.Title>
+        <Select
+          placeholder="状态筛选"
+          allowClear
+          style={{ width: 150 }}
+          value={status || undefined}
+          onChange={(v) => {
+            setStatus(v ?? "");
+            setPage(1);
+          }}
+          options={Object.entries(TASK_STATUS).map(([value, meta]) => ({
+            value,
+            label: meta.label,
+          }))}
+        />
+      </div>
+      <Card>
+        <Table<Task>
+          rowKey="id"
+          columns={columns}
+          dataSource={data?.items ?? []}
+          loading={query.isLoading}
+          pagination={{
+            current: page,
+            pageSize: PAGE_SIZE,
+            total: data?.total ?? 0,
+            showSizeChanger: false,
+            onChange: (p) => setPage(p),
+          }}
+          onRow={(record) => ({
+            onClick: () => navigate(`/tasks/${record.id}`),
+            style: { cursor: "pointer" },
+          })}
+          size="middle"
+        />
+      </Card>
+    </div>
+  );
+}

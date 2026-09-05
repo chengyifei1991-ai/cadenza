@@ -13,6 +13,10 @@ const LoginPage = lazy(() => import("./pages/LoginPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const CollectorsPage = lazy(() => import("./pages/CollectorsPage"));
 const CollectorDetailPage = lazy(() => import("./pages/CollectorDetailPage"));
+const CollectorEditPage = lazy(() => import("./pages/CollectorEditPage"));
+const TaskCenterPage = lazy(() => import("./pages/TaskCenterPage"));
+const TaskDetailPage = lazy(() => import("./pages/TaskDetailPage"));
+const AuditPage = lazy(() => import("./pages/AuditPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 const queryClient = new QueryClient({
@@ -53,20 +57,10 @@ function AppRoutes() {
           <Route index element={<DashboardPage />} />
           <Route path="collectors" element={<CollectorsPage />} />
           <Route path="collectors/:uid" element={<CollectorDetailPage />} />
-          <Route
-            path="tasks"
-            element={
-              <PlaceholderPage
-                title="任务中心"
-                milestone="M2"
-                description="任务状态流转、diff 审批与回滚操作"
-              />
-            }
-          />
-          <Route
-            path="audit"
-            element={<PlaceholderPage title="审计" milestone="M2" description="审计日志检索与过滤" />}
-          />
+          <Route path="collectors/:uid/edit" element={<CollectorEditPage />} />
+          <Route path="tasks" element={<TaskCenterPage />} />
+          <Route path="tasks/:id" element={<TaskDetailPage />} />
+          <Route path="audit" element={<AuditPage />} />
           <Route
             path="assistant"
             element={
