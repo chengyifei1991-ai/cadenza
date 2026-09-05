@@ -37,3 +37,9 @@ internal/webui/static/*
 # 本地包管理缓存（pnpm/npm store 等）
 .pnpm-store/
 .npm-cache/
+
+# Playwright 产物与浏览器缓存
+web/test-results/
+web/playwright-report/
+web/e2e/test-results/
+.pw-browsers/

@@ -91,6 +91,39 @@ jobs:
       - name: E2E（免登模式）
         run: E2E_AUTH=off E2E_PORT=18763 ./tests/e2e.sh
 
+  ui-e2e:
+    name: UI E2E（Playwright，V1 GA 门禁）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build & embed UI + binaries
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+          node web/scripts/embed.mjs
+          go build -o bin/cadenza ./cmd/server
+          go build -o bin/cadenza-passwd ./cmd/cadenza-passwd
+
+      - name: Install Playwright chromium（含系统依赖）
+        run: |
+          cd web
+          npx playwright install --with-deps chromium
+
+      - name: UI E2E（登录→仪表盘→Collectors→编辑器审批闭环→AI 助手）
+        run: npm --prefix web run test:e2e
+
   dco:
     name: DCO 签章检查
     runs-on: ubuntu-latest

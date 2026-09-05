@@ -1,7 +1,7 @@
 {
   "name": "cadenza-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc",
     "test": "vitest run",
+    "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "embed": "node scripts/embed.mjs"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "react-router-dom": "^6.26.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",

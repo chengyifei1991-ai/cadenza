@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cadenza:0.1.0
+    image: cadenza:1.0.0
     container_name: cadenza
     restart: unless-stopped
     ports:
