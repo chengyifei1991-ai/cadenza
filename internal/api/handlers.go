@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -222,6 +223,11 @@ func (h *Handlers) ApproveTask(w http.ResponseWriter, r *http.Request, id string
 	approver = approverOf(r, approver)
 	result, err := h.deps.DispatchApprove(r.Context(), id, approver)
 	if err != nil {
+		// 任务不存在 → 404（避免泄漏英文内部错误，如 store: record not found）。
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "任务不存在")
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -249,6 +255,11 @@ func (h *Handlers) RejectTask(w http.ResponseWriter, r *http.Request, id string)
 	approver := approverOf(r, req.Approver)
 	t, err := h.tasks.Reject(r.Context(), id, approver, req.Reason)
 	if err != nil {
+		// 任务不存在 → 404（避免泄漏英文内部错误）。
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "任务不存在")
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -256,6 +267,21 @@ func (h *Handlers) RejectTask(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // --- Collector 与审计 ---
+
+// GetCollectorJSON 处理 GET /api/v1/collectors/{uid}：返回单个 Collector 详情
+// （含当前生效配置全文，配置编辑器/详情页使用）。
+func (h *Handlers) GetCollectorJSON(w http.ResponseWriter, r *http.Request, uid string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	c, err := h.store.GetCollector(r.Context(), uid)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Collector 不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
 
 // ListCollectors 处理 GET /api/v1/collectors?page=&page_size=。
 // 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。

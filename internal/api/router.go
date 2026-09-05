@@ -141,11 +141,15 @@ func (r *Router) taskAction(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// collectorAction 分发 /api/v1/collectors/{uid}/versions。
+// collectorAction 分发 /api/v1/collectors/{uid}[/versions]。
 func (r *Router) collectorAction(w http.ResponseWriter, req *http.Request) {
 	parts := splitPath(req.URL.Path)
 	if len(parts) == 5 && parts[4] == "versions" {
 		r.handlers.ListVersions(w, req, parts[3])
+		return
+	}
+	if len(parts) == 4 {
+		r.handlers.GetCollectorJSON(w, req, parts[3])
 		return
 	}
 	writeError(w, http.StatusNotFound, "未知路径")
