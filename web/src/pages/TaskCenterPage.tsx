@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, Select, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { api } from "../api/client";
+import ErrorState from "../components/ErrorState";
 import type { Task, TaskStatus } from "../api/types";
 import { TASK_STATUS, TASK_TYPE_LABEL } from "../lib/status";
 import { fmtAgo } from "../lib/time";
@@ -71,6 +72,7 @@ export default function TaskCenterPage() {
           }))}
         />
       </div>
+      {query.isError && <ErrorState onRetry={() => query.refetch()} />}
       <Card>
         <Table<Task>
           rowKey="id"

@@ -162,6 +162,11 @@ export default function TaskDetailPage() {
           ) : (
             <Typography.Text type="secondary">本任务无可展示的配置内容。</Typography.Text>
           )}
+          {t.generated_yaml && !targetCollector.data && (
+            <Typography.Text type="secondary">
+              目标非单实例或暂无法获取其生效配置（离线/分组目标），无法生成对比差异，以上为配置原文。
+            </Typography.Text>
+          )}
           {!t.generated_yaml && !targetCollector.data && t.rollback_version_id && (
             <Typography.Text type="secondary">回滚任务的变更目标见版本历史（目标 Collector 详情）。</Typography.Text>
           )}
@@ -199,7 +204,7 @@ export default function TaskDetailPage() {
         title="拒绝任务"
         open={rejectOpen}
         okText="确认拒绝"
-        okButtonProps={{ danger: true, loading: reject.isPending, icon: <ExclamationCircleOutlined /> }}
+        okButtonProps={{ danger: true, disabled: !rejectReason.trim(), loading: reject.isPending, icon: <ExclamationCircleOutlined /> }}
         onOk={() => rejectReason.trim() && reject.mutate(rejectReason.trim())}
         onCancel={() => {
           setRejectOpen(false);

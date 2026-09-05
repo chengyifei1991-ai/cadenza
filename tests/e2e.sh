@@ -352,6 +352,20 @@ check_code "授权 Origin 预检 → 204" 204
 ACAO2=$(hdr -H "Origin: $CORS_ORIGIN" -b "$CJ" "$BASE/api/v1/collectors")
 if [ -n "$ACAO2" ]; then pass; else fail "授权 Origin 应回写 CORS 头"; fi
 
+section "15. M2 契约补强（编辑器/回滚闭环）"
+# 1) 编辑器提交的 note 进入任务 input（详情可回读）；generated_yaml 随任务保留
+req GET "/api/v1/tasks/$APPLY_ID" --cookie "$CJ"
+check_contains "apply 任务的变更说明含 note" "e2e 提交"
+check_contains "apply 任务携带 generated_yaml" "exporters:"
+# 2) 审批回滚后：Collector 生效配置应更新为回滚目标版本内容（recordConfigVersion 同步）
+req GET "/api/v1/collectors/demo-gateway-1" --cookie "$CJ"
+EFFECT=$(jget "['effective_config']")
+if [ -n "$EFFECT" ] && ! printf '%s' "$EFFECT" | grep -q "memory_limiter"; then
+  pass
+else
+  fail "回滚后 effective_config 应被更新且不含 memory_limiter（实际: $(printf '%s' "$EFFECT" | head -c 80 | tr '\n' ' ')）"
+fi
+
 section "14. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'

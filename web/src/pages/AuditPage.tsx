@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { api } from "../api/client";
+import ErrorState from "../components/ErrorState";
 import type { AuditLog } from "../api/types";
 import { AUDIT_ACTION } from "../lib/status";
 import { fmtDateTime } from "../lib/time";
@@ -58,6 +59,7 @@ export default function AuditPage() {
   return (
     <div>
       <Typography.Title level={4}>审计日志</Typography.Title>
+      {query.isError && <ErrorState onRetry={() => query.refetch()} />}
       <Card>
         <Table<AuditLog>
           rowKey="id"
