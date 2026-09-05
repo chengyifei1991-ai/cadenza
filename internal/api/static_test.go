@@ -46,6 +46,8 @@ func TestSPAHandler(t *testing.T) {
 		{name: "静态文件原样返回", path: "/assets/app.js", want: 200, substr: "console.log"},
 		{name: "子路径(前端路由)回退 index", path: "/collectors/uid-1", want: 200, substr: "<div id=\"root\">"},
 		{name: "无后缀路由回退 index", path: "/app/foo", want: 200, substr: "<div id=\"root\">"},
+		{name: "缺失资源(带扩展名) → 404 而非回退", path: "/assets/missing.js", want: 404, substr: "404"},
+		{name: "缺失 css 资源 → 404", path: "/styles/app.css", want: 404, substr: "404"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

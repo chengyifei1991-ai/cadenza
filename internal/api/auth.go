@@ -150,6 +150,10 @@ func (m *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求体解析失败")
 		return
 	}
+	if req.Username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "用户名与密码不能为空")
+		return
+	}
 	if subtle.ConstantTimeCompare([]byte(req.Username), []byte(m.username)) != 1 ||
 		bcrypt.CompareHashAndPassword(m.hash, []byte(req.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "用户名或密码错误")

@@ -56,6 +56,41 @@ jobs:
           fi
           echo "SPDX 头齐全"
 
+  e2e:
+    name: e2e 黑盒回归（simple + off）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build server & passwd tool
+        run: |
+          go build -o bin/cadenza ./cmd/server
+          go build -o bin/cadenza-passwd ./cmd/cadenza-passwd
+
+      - name: Build & embed Web UI
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+          node web/scripts/embed.mjs
+          go build -o bin/cadenza ./cmd/server   # embed 后重编，产物含 UI
+
+      - name: E2E（simple 鉴权模式）
+        run: ./tests/e2e.sh
+
+      - name: E2E（免登模式）
+        run: E2E_AUTH=off E2E_PORT=18763 ./tests/e2e.sh
+
   dco:
     name: DCO 签章检查
     runs-on: ubuntu-latest

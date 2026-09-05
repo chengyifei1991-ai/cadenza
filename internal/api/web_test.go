@@ -284,3 +284,108 @@ func TestSystemInfo(t *testing.T) {
 		}
 	}
 }
+
+// TestGetCollectorDetail 验证 GET /api/v1/collectors/{uid} 详情端点。
+func TestGetCollectorDetail(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	if err := h.store.UpsertCollector(ctx, &store.Collector{
+		InstanceUID: "col-det-1", Hostname: "det-node", Version: "0.156.0",
+		LastSeenAt: time.Now().UTC(), Status: store.CollectorStatusHealthy,
+		EffectiveConfig: sampleYAML, GroupID: "grp-prod",
+	}); err != nil {
+		t.Fatalf("UpsertCollector 失败: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/collectors/", func(w http.ResponseWriter, r *http.Request) {
+		parts := splitPath(r.URL.Path)
+		if len(parts) == 4 {
+			h.GetCollectorJSON(w, r, parts[3])
+			return
+		}
+		writeError(w, http.StatusNotFound, "未知路径")
+	})
+
+	rec := doJSON(t, mux, http.MethodGet, "/api/v1/collectors/col-det-1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("详情 status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var c store.Collector
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		t.Fatalf("解析详情失败: %v", err)
+	}
+	if c.InstanceUID != "col-det-1" || c.Hostname != "det-node" || c.EffectiveConfig != sampleYAML {
+		t.Errorf("详情字段不符: %+v", c)
+	}
+	// 不存在 → 404。
+	rec = doJSON(t, mux, http.MethodGet, "/api/v1/collectors/nope", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("不存在 uid status = %d, want 404", rec.Code)
+	}
+	// 方法不符 → 405。
+	rec = doJSON(t, mux, http.MethodPost, "/api/v1/collectors/col-det-1", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST status = %d, want 405", rec.Code)
+	}
+}
+
+// TestLoginEmptyCredentials 验证空凭据登录返回 400（参数错误而非认证失败）。
+func TestLoginEmptyCredentials(t *testing.T) {
+	am := newTestAuth(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/auth/login", am.HandleLogin)
+	root := am.Middleware(mux)
+
+	for _, tc := range []struct {
+		name string
+		body map[string]string
+	}{
+		{name: "全空", body: map[string]string{}},
+		{name: "缺密码", body: map[string]string{"username": "admin"}},
+		{name: "缺用户名", body: map[string]string{"password": "secret"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doJSON(t, root, http.MethodPost, "/api/v1/auth/login", tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "不能为空") {
+				t.Errorf("应提示字段缺失: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestApproveRejectNotFound 验证审批/拒绝不存在的任务返回 404 中文（不泄漏英文内部错误）。
+func TestApproveRejectNotFound(t *testing.T) {
+	h := newTestHandlers(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/tasks/", func(w http.ResponseWriter, r *http.Request) {
+		parts := splitPath(r.URL.Path)
+		if len(parts) == 5 {
+			switch parts[4] {
+			case "approve":
+				h.ApproveTask(w, r, parts[3])
+			case "reject":
+				h.RejectTask(w, r, parts[3])
+			}
+			return
+		}
+		writeError(w, http.StatusNotFound, "未知路径")
+	})
+	for _, action := range []string{"approve", "reject"} {
+		t.Run(action, func(t *testing.T) {
+			body := map[string]any{"reason": "x"}
+			rec := doJSON(t, mux, http.MethodPost, "/api/v1/tasks/does-not-exist/"+action, body)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s 不存在任务 status = %d, want 404", action, rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "record not found") {
+				t.Errorf("%s 不应泄漏英文内部错误: %s", action, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "任务不存在") {
+				t.Errorf("%s 应返回中文 404: %s", action, rec.Body.String())
+			}
+		})
+	}
+}
