@@ -1,5 +1,5 @@
 // 主布局：侧栏导航 + 顶栏用户区（AntD Layout），业务页经 <Outlet/> 渲染。
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   AuditOutlined,
@@ -30,6 +30,7 @@ export default function AppShell() {
   const { user, mode, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const [collapsed, setCollapsed] = useState(false);
 
   // 侧栏高亮：匹配当前一级路径。
   const selected = useMemo(() => {
@@ -37,18 +38,26 @@ export default function AppShell() {
     return MENU.some((m) => m && typeof m === "object" && "key" in m && m.key === seg) ? seg : "/";
   }, [location.pathname]);
 
-  const userMenu: MenuProps = {
-    items: [{ key: "logout", icon: <LogoutOutlined />, label: "退出登录" }],
-    onClick: async () => {
-      await logout();
-      navigate("/login", { replace: true });
-    },
-  };
+  const loginEnabled = mode === "simple";
+  const userMenu: MenuProps | undefined = loginEnabled
+    ? {
+        items: [{ key: "logout", icon: <LogoutOutlined />, label: "退出登录" }],
+        onClick: async () => {
+          try {
+            await logout();
+          } finally {
+            navigate("/login", { replace: true });
+          }
+        },
+      }
+    : undefined;
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
-      <Sider breakpoint="lg" collapsedWidth={0}>
-        <div style={{ color: "#fff", padding: 16, fontWeight: 700, fontSize: 16 }}>Cadenza</div>
+      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={208}>
+        <div style={{ color: "#fff", padding: 16, fontWeight: 700, fontSize: 16, whiteSpace: "nowrap", overflow: "hidden" }}>
+          {collapsed ? "CZ" : "Cadenza"}
+        </div>
         <Menu theme="dark" mode="inline" selectedKeys={[selected]} items={MENU} />
       </Sider>
       <Layout>
@@ -63,12 +72,18 @@ export default function AppShell() {
           }}
         >
           <Typography.Text type="secondary">OpAMP 统一管控台</Typography.Text>
-          <Dropdown menu={userMenu} placement="bottomRight">
-            <span style={{ cursor: "pointer" }}>
-              {user ?? "未登录"}
-              {mode === "off" && <Tag style={{ marginLeft: 8 }}>免登模式</Tag>}
+          {userMenu ? (
+            <Dropdown menu={userMenu} placement="bottomRight">
+              <span style={{ cursor: "pointer" }}>{user ?? "未登录"}</span>
+            </Dropdown>
+          ) : (
+            <span>
+              {user ?? "user"}
+              <Tag style={{ marginLeft: 8 }} color="default">
+                免登模式
+              </Tag>
             </span>
-          </Dropdown>
+          )}
         </Header>
         <Content style={{ margin: 24 }}>
           <Outlet />

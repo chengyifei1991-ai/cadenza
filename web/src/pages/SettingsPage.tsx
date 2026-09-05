@@ -8,9 +8,10 @@ import { api } from "../api/client";
 import { useAuth } from "../app/auth";
 
 export default function SettingsPage() {
-  const { user, logout } = useAuth();
+  const { user, mode, logout } = useAuth();
   const navigate = useNavigate();
   const info = useQuery({ queryKey: ["system-info"], queryFn: () => api.systemInfo() });
+  const loginEnabled = mode === "simple";
 
   const onLogout = async () => {
     await logout();
@@ -27,16 +28,20 @@ export default function SettingsPage() {
           <Descriptions column={1}>
             <Descriptions.Item label="版本">{info.data?.version ?? "-"}</Descriptions.Item>
             <Descriptions.Item label="鉴权模式">
-              <Tag color={info.data?.auth_mode === "simple" ? "orange" : "default"}>
-                {info.data?.auth_mode === "simple" ? "登录保护" : "免登模式"}
+              <Tag color={loginEnabled ? "orange" : "default"}>
+                {loginEnabled ? "登录保护" : "免登模式"}
               </Tag>
             </Descriptions.Item>
             <Descriptions.Item label="当前用户">{user ?? "-"}</Descriptions.Item>
           </Descriptions>
           <Space style={{ marginTop: 16 }}>
-            <Button icon={<LogoutOutlined />} onClick={onLogout}>
-              退出登录
-            </Button>
+            {loginEnabled ? (
+              <Button icon={<LogoutOutlined />} onClick={onLogout}>
+                退出登录
+              </Button>
+            ) : (
+              <Alert type="info" showIcon message="免登模式（WEB_AUTH_MODE=off），无需登录/登出。" />
+            )}
           </Space>
         </Card>
       </Space>

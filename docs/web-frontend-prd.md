@@ -47,7 +47,7 @@ cadenza/
 |---|---|---|---|---|
 | POST `/api/v1/auth/login`·`logout`·GET `auth/me` | 登录/登出/会话校验 | 🆕 | 登录、守卫 | 一次性 |
 | GET `/api/v1/collectors` | 列表 | ✅ | Collectors、Dashboard | 30s 轮询 |
-| GET `/api/v1/collectors/{uid}`（详情需补） | 单实例详情 | ⬜（详情信息可由列表+versions 拼装，M2 评估） | Collector 详情 | — |
+| GET `/api/v1/collectors/{uid}` | 单实例详情 | ✅（M1 已实现） | Collector 详情 | 30s 轮询 |
 | GET `/api/v1/collectors/{uid}/versions` | 版本历史 | ✅ | 版本历史、回滚 | 页面激活刷新 |
 | POST `/api/v1/tasks/apply` | 编辑器保存下发 | 🆕 | 配置编辑器 | 突变后跳详情 |
 | GET `/api/v1/tasks?status=` | 任务列表 | ✅ | 任务中心、Dashboard | 10s 轮询 |
