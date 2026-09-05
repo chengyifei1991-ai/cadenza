@@ -1,0 +1,22 @@
+{
+  "projectName": "cadenza",
+  "projectOwner": "chengyifei1991-ai",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": ["README.md"],
+  "imageSize": 100,
+  "commit": true,
+  "commitConvention": "angular",
+  "contributors": [
+    {
+      "login": "chengyifei1991",
+      "name": "chengyifei",
+      "avatar_url": "https://avatars.githubusercontent.com/chengyifei1991",
+      "profile": "https://github.com/chengyifei1991",
+      "contributions": ["code", "doc", "infra", "review", "maintenance"]
+    }
+  ],
+  "contributorsPerLine": 7,
+  "skipCi": true,
+  "linkToUsage": true
+}

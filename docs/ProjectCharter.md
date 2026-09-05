@@ -1,4 +1,6 @@
-# OpAMP 后端服务 - 项目宪章
+# Cadenza - 项目宪章
+
+> ⚠️ **非官方项目声明**：Cadenza 是社区第三方项目，与 [OpenTelemetry](https://opentelemetry.io/)、[CNCF](https://www.cncf.io/) 及官方 [opamp-go](https://github.com/open-telemetry/opamp-go) 项目**无隶属关系**，亦非其官方背书产品。
 
 ## 🎯 项目概述
 

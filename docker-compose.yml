@@ -1,14 +1,14 @@
-# opamp-backend 容器化部署（docker compose / nerdctl compose 均可）
+# cadenza 容器化部署（docker compose / nerdctl compose 均可）
 # 用法：
 #   cp .env.example .env && vim .env   # 填入 LLM_API_KEY 等
 #   docker compose up -d               # 或 nerdctl compose up -d
 services:
-  opamp-backend:
+  cadenza:
     build:
       context: .
       dockerfile: Dockerfile
-    image: opamp-backend:0.1.0
-    container_name: opamp-backend
+    image: cadenza:0.1.0
+    container_name: cadenza
     restart: unless-stopped
     ports:
       # 对外暴露统一 HTTP 端口（OpAMP /v1/opamp + MCP /mcp + REST /api/v1）
@@ -20,6 +20,15 @@ services:
       DB_SQLITE_PATH: "/data/opamp.db"
       # Collector 接入认证（外部 Collector 需携带此 Bearer token）
       OPAMP_AUTH_TOKEN: "${OPAMP_AUTH_TOKEN:-}"
+      # Web 控制台登录（默认 simple=登录保护，管理面不裸奔；口令哈希生成：
+      #   printf '你的密码' | go run ./cmd/cadenza-passwd
+      #   htpasswd -bnBC 10 "" '你的密码' | tr -d ':\n'）
+      # 注意：WEB_AUTH_MODE=simple（默认）时 WEB_ADMIN_PASSWORD_HASH 必填，缺失则服务拒绝启动
+      WEB_AUTH_MODE: "${WEB_AUTH_MODE:-simple}"
+      WEB_ADMIN_USER: "${WEB_ADMIN_USER:-admin}"
+      WEB_ADMIN_PASSWORD_HASH: "${WEB_ADMIN_PASSWORD_HASH:-}"
+      # 演示数据（true=空库注入演示数据）
+      DEMO_MODE: "${DEMO_MODE:-false}"
       # LLM（OpenAI 兼容，默认 DeepSeek）
       LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com}"
       LLM_API_KEY: "${LLM_API_KEY:?请在 .env 中配置 LLM_API_KEY}"
@@ -38,7 +47,8 @@ services:
       # 可选：把宿主机的 otelcol-contrib v0.156.0 挂进容器启用深度校验
       # - /usr/bin/otelcol-contrib:/usr/local/bin/otelcol-contrib:ro
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/collectors"]
+      # /healthz 公开端点（不受 Web 登录影响）
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

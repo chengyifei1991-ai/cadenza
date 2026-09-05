@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package opampserver 封装 OpAMP 服务器：连接认证、状态接收、
 // Collector 注册表维护、配置主动下发。
 package opampserver
@@ -7,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chengyifei1991-ai/opamp-backend/internal/store"
+	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/open-telemetry/opamp-go/server/types"
 )
 

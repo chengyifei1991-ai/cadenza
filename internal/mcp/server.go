@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package mcp 基于 trpc-mcp-go 构建 MCP Server，将 Agent 工具集
 // 暴露为 MCP 工具（stdio/SSE/streamable HTTP，随主 HTTP 端口挂载）。
 package mcp

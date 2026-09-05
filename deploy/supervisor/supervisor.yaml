@@ -1,5 +1,5 @@
 # opampsupervisor 配置：连接 OpAMP 服务端，管理 Collector 生命周期
-# 服务端：容器 opamp-backend（经 Windows 转发 192.168.143.1:8080）
+# 服务端：容器 cadenza（经 Windows 转发 192.168.143.1:8080）
 server:
   endpoint: ws://192.168.143.1:8080/v1/opamp
   headers:
@@ -16,7 +16,7 @@ agent:
   instance_id: "0395a2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5b"
 
 storage:
-  directory: /root/workspace/opamp-backend/.build/supervisor-data
+  directory: /root/workspace/cadenza/.build/supervisor-data
 
 telemetry:
   logs:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package task 实现任务状态机（设计方案 v3 第 4 节）。
 //
 // 状态机：
@@ -15,7 +18,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/chengyifei1991-ai/opamp-backend/internal/store"
+	"github.com/chengyifei1991-ai/cadenza/internal/store"
 )
 
 // Service 是任务生命周期服务，封装状态迁移与持久化。

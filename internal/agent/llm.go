@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package agent 实现智能体编排层：LLM 稳定性包装、OpAMP 管控工具集、
 // 对话生成/自动优化编排（设计方案 v3 第 4 节）。
 package agent
@@ -13,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chengyifei1991-ai/opamp-backend/internal/config"
+	"github.com/chengyifei1991-ai/cadenza/internal/config"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/failover"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"

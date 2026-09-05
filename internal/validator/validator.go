@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package validator 实现配置的两级校验：
 //
 //  1. 第一级：yaml.v3 语法与结构检查（始终执行）；

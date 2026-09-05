@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 package opampserver
 
 import (
@@ -12,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chengyifei1991-ai/opamp-backend/internal/store"
+	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/open-telemetry/opamp-go/protobufs"
 	"github.com/open-telemetry/opamp-go/server"
 	"github.com/open-telemetry/opamp-go/server/types"

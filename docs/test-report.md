@@ -94,7 +94,7 @@
 
 | 组件 | 版本/位置 |
 |---|---|
-| 服务端容器 | `opamp-backend:0.1.0`（containerd, host 网络, REQUIRE_APPROVAL=false） |
+| 服务端容器 | `cadenza:0.1.0`（containerd, host 网络, REQUIRE_APPROVAL=false） |
 | Collector | `/usr/bin/otelcol-contrib` v0.156.0（systemd 已停，由 supervisor 管理） |
 | Supervisor | `.build/opampsupervisor` v0.156.0 + `.build/supervisor.yaml` |
 | 服务端地址 | `ws://192.168.143.1:8080/v1/opamp`（Windows 转发） |

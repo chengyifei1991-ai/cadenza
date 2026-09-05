@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 用 Rancher Desktop 的 containerd 运行时（nerdctl）构建并运行 opamp-backend。
+# 用 Rancher Desktop 的 containerd 运行时（nerdctl）构建并运行 cadenza。
 #
 # 背景：Rancher Desktop 未启用 BuildKit，无法 nerdctl build，
 # 采用"临时容器 + nerdctl cp + commit"方式构建镜像（已验证可行）。
@@ -10,18 +10,19 @@
 set -euo pipefail
 
 NERDCTL="${NERDCTL:-/mnt/wsl/rancher-desktop/bin/nerdctl}"
-IMAGE="opamp-backend:0.1.0"
-NAME="opamp-backend"
+IMAGE="cadenza:0.1.0"
+NAME="cadenza"
 PORT="${PORT:-8080}"
 BASE_IMAGE="alpine:3.22"
 
-BIN_SRC="${BIN_SRC:-/root/workspace/opamp-backend/.build/opamp-server}"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+BIN_SRC="${BIN_SRC:-$REPO_ROOT/.build/cadenza}"
 
 # 1. 构建静态二进制（若缺失）
 build_binary() {
   if [ ! -x "$BIN_SRC" ]; then
     echo ">> 构建静态二进制..."
-    (cd "$(dirname "$0")/../.." && CGO_ENABLED=0 go build -o .build/opamp-server ./cmd/server)
+    (cd "$REPO_ROOT" && CGO_ENABLED=0 go build -o .build/cadenza ./cmd/server)
   fi
   echo ">> 二进制就绪: $BIN_SRC"
 }
@@ -35,7 +36,7 @@ build_image() {
   "$NERDCTL" run -d --name "$prep" "$BASE_IMAGE" sleep 3600 >/dev/null
   "$NERDCTL" exec "$prep" sh -c 'mkdir -p /app /data /usr/local/bin && apk add --no-cache ca-certificates tzdata >/dev/null'
   echo ">> 写入二进制（stdin 方式，规避 WSL 路径翻译问题）..."
-  "$NERDCTL" exec -i "$prep" sh -c 'cat > /app/opamp-server && chmod +x /app/opamp-server' < "$BIN_SRC"
+  "$NERDCTL" exec -i "$prep" sh -c 'cat > /app/cadenza && chmod +x /app/cadenza' < "$BIN_SRC"
   echo ">> 提交镜像 $IMAGE ..."
   "$NERDCTL" commit "$prep" "$IMAGE"
   "$NERDCTL" rm -f "$prep" >/dev/null
@@ -52,7 +53,7 @@ run_container() {
     -e DB_DRIVER=sqlite -e DB_SQLITE_PATH=/data/opamp.db \
     -e "OPAMP_AUTH_TOKEN=${OPAMP_AUTH_TOKEN:-}" \
     -v opamp-data:/data \
-    "$IMAGE" /app/opamp-server
+    "$IMAGE" /app/cadenza
   echo ">> 容器已启动，验证:"
   "$NERDCTL" ps | grep "$NAME"
   echo ">> Windows 侧访问: http://localhost:${PORT}"

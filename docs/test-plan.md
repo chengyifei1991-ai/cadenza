@@ -7,7 +7,7 @@
 ```
 ┌─ Windows 主机 ─────────────────────────────────────────────┐
 │  Rancher Desktop（containerd v2.3.2 + nerdctl）            │
-│    └─ 容器 opamp-backend:0.1.0（服务端 :8080）             │
+│    └─ 容器 cadenza:0.1.0（服务端 :8080）             │
 │       localhost:8080 转发（Windows 侧可达 ✅）             │
 └──────────────┬─────────────────────────────────────────────┘
                │ 192.168.143.1:8080（WSL 虚拟网关转发，已验证 200）
@@ -22,7 +22,7 @@
 
 | 对象 | 版本/标识 | 位置 |
 |---|---|---|
-| 服务端容器 | `opamp-backend:0.1.0` | Rancher Desktop containerd |
+| 服务端容器 | `cadenza:0.1.0` | Rancher Desktop containerd |
 | Collector | otelcol-contrib **0.156.0** | 沙箱 `/usr/bin/otelcol-contrib` |
 | 服务端访问地址（沙箱视角） | `http://192.168.143.1:8080` | Windows 转发 |
 
