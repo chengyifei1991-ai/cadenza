@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package store 定义持久化数据模型与存储抽象接口。
 //
 // 数据模型与设计方案 v3 第 2 节保持一致：
@@ -156,6 +159,23 @@ type ChatSession struct {
 	Messages []ChatMessage `json:"messages"`
 	// CreatedAt 是会话创建时间。
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// SessionSummary 是会话列表项：会话元信息 + 消息聚合摘要。
+// 该结构不入库，查询时由 chat_messages 聚合派生（前端会话列表/标题预览用）。
+type SessionSummary struct {
+	// ID 是会话唯一标识（ULID）。
+	ID string `json:"id"`
+	// CreatedAt 是会话创建时间。
+	CreatedAt time.Time `json:"created_at"`
+	// MessageCount 是会话内的消息条数。
+	MessageCount int `json:"message_count"`
+	// LastMessageAt 是最后一条消息的时间；空会话为零值。
+	LastMessageAt time.Time `json:"last_message_at,omitempty"`
+	// FirstMessage 是会话首条用户消息（截断预览，用作列表标题）。
+	FirstMessage string `json:"first_message,omitempty"`
+	// LastMessage 是会话最后一条消息（截断预览）。
+	LastMessage string `json:"last_message,omitempty"`
 }
 
 // RunStatus 表示一次智能体运行的终态。

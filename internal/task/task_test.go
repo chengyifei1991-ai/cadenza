@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 package task
 
 import (
@@ -5,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chengyifei1991-ai/opamp-backend/internal/store"
+	"github.com/chengyifei1991-ai/cadenza/internal/store"
 )
 
 // TestCanTransition 表驱动测试状态迁移合法性。
@@ -94,9 +97,20 @@ func (f *fakeStore) GetSession(context.Context, string) (*store.ChatSession, err
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) AppendMessage(context.Context, string, store.ChatMessage) error { return nil }
-func (f *fakeStore) CreateAgentRun(context.Context, *store.AgentRun) error          { return nil }
-func (f *fakeStore) UpdateAgentRun(context.Context, *store.AgentRun) error          { return nil }
-func (f *fakeStore) AppendAudit(context.Context, *store.AuditLog) error             { return nil }
+func (f *fakeStore) ListSessions(context.Context, int, int) ([]store.SessionSummary, int64, error) {
+	return nil, 0, nil
+}
+func (f *fakeStore) Ping(context.Context) error                   { return nil }
+func (f *fakeStore) CountSessions(context.Context) (int64, error) { return 0, nil }
+func (f *fakeStore) CountCollectorsByStatus(context.Context) (map[store.CollectorStatus]int64, error) {
+	return nil, nil
+}
+func (f *fakeStore) CountTasksByStatus(context.Context) (map[store.TaskStatus]int64, error) {
+	return nil, nil
+}
+func (f *fakeStore) CreateAgentRun(context.Context, *store.AgentRun) error { return nil }
+func (f *fakeStore) UpdateAgentRun(context.Context, *store.AgentRun) error { return nil }
+func (f *fakeStore) AppendAudit(context.Context, *store.AuditLog) error    { return nil }
 func (f *fakeStore) ListAudit(context.Context, int64, int, int) ([]store.AuditLog, int64, error) {
 	return nil, 0, nil
 }

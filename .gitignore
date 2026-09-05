@@ -22,7 +22,18 @@
 *.swp
 .DS_Store
 
-# Obsidian workspace data (docs are tracked; local plugin caches are not)
-docs/.obsidian/workspace.json
-docs/.obsidian/workspace-mobile.json
+# Obsidian（编辑器本地配置，不入库）
+.obsidian/
+docs/.obsidian/
 .build/
+
+# 前端构建产物与依赖
+web/node_modules/
+web/dist/
+# go:embed 静态源由 web/scripts/embed.mjs 填充；仅占位 index.html 入库
+internal/webui/static/*
+!internal/webui/static/index.html
+
+# 本地包管理缓存（pnpm/npm store 等）
+.pnpm-store/
+.npm-cache/

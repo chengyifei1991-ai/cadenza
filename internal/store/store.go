@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 package store
 
 import (
@@ -52,6 +55,18 @@ type Store interface {
 	GetSession(ctx context.Context, id string) (*ChatSession, error)
 	// AppendMessage 向会话追加一条消息。
 	AppendMessage(ctx context.Context, sessionID string, m ChatMessage) error
+	// ListSessions 分页返回会话列表（按最近消息倒序，空会话置底）及总数。
+	// page 从 1 开始；pageSize<=0 时返回全量。
+	ListSessions(ctx context.Context, page, pageSize int) (items []SessionSummary, total int64, err error)
+
+	// Ping 探测数据库连通性（/healthz 使用）。
+	Ping(ctx context.Context) error
+	// CountSessions 返回会话总数。
+	CountSessions(ctx context.Context) (int64, error)
+	// CountCollectorsByStatus 按状态分组统计 Collector 数（仅含存在的状态）。
+	CountCollectorsByStatus(ctx context.Context) (map[CollectorStatus]int64, error)
+	// CountTasksByStatus 按状态分组统计任务数（仅含存在的状态）。
+	CountTasksByStatus(ctx context.Context) (map[TaskStatus]int64, error)
 
 	// CreateAgentRun 创建一次智能体运行。
 	CreateAgentRun(ctx context.Context, r *AgentRun) error

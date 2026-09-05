@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package config 从环境变量加载全部运行时配置。
 //
 // 敏感信息（LLM API Key、OpAMP 认证 token）一律通过环境变量注入，
@@ -8,8 +11,40 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// WebAuthMode 是 Web 管理面的鉴权模式。
+type WebAuthMode string
+
+const (
+	// WebAuthModeSimple 表示单管理员登录保护（安全默认值，口令哈希必填）。
+	WebAuthModeSimple WebAuthMode = "simple"
+	// WebAuthModeOff 表示免登（仅本地/演示环境，风险自负）。
+	WebAuthModeOff WebAuthMode = "off"
+)
+
+// WebConfig 汇总 Web 控制台（前端阶段 v2）相关配置。
+type WebConfig struct {
+	// DisableWeb 为 true 时不注册静态路由（纯后端部署：OpAMP/MCP/REST）。
+	DisableWeb bool
+	// Dir 覆盖静态资源目录（可选）；为空时读取 go:embed 内嵌资源。
+	Dir string
+
+	// AuthMode 是 Web 鉴权模式（simple/off）。
+	AuthMode WebAuthMode
+	// AdminUser 是管理员用户名（simple 模式）。
+	AdminUser string
+	// AdminPasswordHash 是管理员口令的 bcrypt 哈希（simple 模式必填）。
+	AdminPasswordHash string
+
+	// CORSAllowedOrigins 是允许的跨域 Origin 列表（逗号分隔，默认空=同源）。
+	CORSAllowedOrigins []string
+
+	// DemoMode 为 true 时在空库注入演示数据（开箱体验）。
+	DemoMode bool
+}
 
 // LLMConfig 汇总 LLM 接入与稳定性相关配置。
 type LLMConfig struct {
@@ -66,6 +101,9 @@ type Config struct {
 
 	// RequireApproval 控制 generate/optimize 任务默认是否要求审批。
 	RequireApproval bool
+
+	// Web 是 Web 控制台相关配置。
+	Web WebConfig
 }
 
 // Load 从环境变量加载配置，返回缺失必需项的错误。
@@ -79,6 +117,15 @@ func Load() (*Config, error) {
 		OtelcolBin:      getEnv("OTELCOL_BIN", "/usr/local/bin/otelcol-contrib"),
 		StrictValidate:  getBool("STRICT_VALIDATE", false),
 		RequireApproval: getBool("REQUIRE_APPROVAL", true),
+		Web: WebConfig{
+			DisableWeb:         getBool("DISABLE_WEB", false),
+			Dir:                os.Getenv("WEB_DIR"),
+			AuthMode:           WebAuthMode(getEnv("WEB_AUTH_MODE", string(WebAuthModeSimple))),
+			AdminUser:          getEnv("WEB_ADMIN_USER", "admin"),
+			AdminPasswordHash:  os.Getenv("WEB_ADMIN_PASSWORD_HASH"),
+			CORSAllowedOrigins: splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
+			DemoMode:           getBool("DEMO_MODE", false),
+		},
 		LLM: LLMConfig{
 			BaseURL:          getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 			APIKey:           os.Getenv("LLM_API_KEY"),
@@ -116,7 +163,49 @@ func (c *Config) validate() error {
 	if c.LLM.BaseURL == "" {
 		return fmt.Errorf("config: LLM_BASE_URL is required")
 	}
+	if err := c.validateWeb(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateWeb 校验 Web 相关配置（安全默认值：simple 模式缺失口令哈希时启动失败）。
+func (c *Config) validateWeb() error {
+	switch c.Web.AuthMode {
+	case WebAuthModeSimple:
+		// 纯后端部署（无 Web）时不强制要求口令哈希。
+		if c.Web.DisableWeb {
+			return nil
+		}
+		if c.Web.AdminUser == "" {
+			return fmt.Errorf("config: WEB_ADMIN_USER must not be empty")
+		}
+		if c.Web.AdminPasswordHash == "" {
+			return fmt.Errorf("config: WEB_ADMIN_PASSWORD_HASH is required when WEB_AUTH_MODE=simple " +
+				"(generate with: htpasswd -bnBC 10 \"\" '<password>' | tr -d ':\\n')")
+		}
+		return nil
+	case WebAuthModeOff:
+		return nil
+	default:
+		return fmt.Errorf("config: WEB_AUTH_MODE must be \"simple\" or \"off\", got %q", c.Web.AuthMode)
+	}
+}
+
+// splitCSV 将逗号分隔的配置拆为去空格后的列表。
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnv(key, def string) string {

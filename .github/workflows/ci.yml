@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build / vet / test / fmt / license
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build & embed Web UI
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+          node web/scripts/embed.mjs
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Format check
+        run: test -z "$(gofmt -l cmd internal)"
+
+      - name: SPDX header check
+        run: |
+          missing=$(find cmd internal -name '*.go' | while read f; do
+            grep -q 'SPDX-License-Identifier' "$f" || echo "$f"
+          done)
+          if [ -n "$missing" ]; then
+            echo "以下 .go 文件缺少 SPDX 头："
+            echo "$missing"
+            exit 1
+          fi
+          echo "SPDX 头齐全"
+
+  dco:
+    name: DCO 签章检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: DCO check
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            range="${base}..${head}"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          bad=$(git log --format='%H' "$range" | while read c; do
+            git show -s --format='%B' "$c" | grep -q '^Signed-off-by:' || echo "$c"
+          done)
+          if [ -n "$bad" ]; then
+            echo "以下提交缺少 Signed-off-by（DCO）："
+            echo "$bad"
+            exit 1
+          fi
+          echo "DCO 通过"

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 package store
 
 import (
@@ -512,6 +515,125 @@ func (s *sqlStore) AppendMessage(ctx context.Context, sessionID string, m ChatMe
 		`INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)`,
 		sessionID, m.Role, m.Content, fmtTime(m.CreatedAt))
 	return err
+}
+
+// listSessionQuery 是会话列表的查询骨架：每行附带消息聚合摘要（标量子查询），
+// 按"最后一条消息 id"倒序（空会话置底），SQLite/MySQL 均兼容。
+const listSessionQuery = `
+	SELECT s.id, s.created_at,
+		(SELECT COUNT(*) FROM chat_messages m0 WHERE m0.session_id = s.id) AS message_count,
+		(SELECT m1.created_at FROM chat_messages m1 WHERE m1.session_id = s.id ORDER BY m1.id DESC LIMIT 1) AS last_at,
+		(SELECT m2.content FROM chat_messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.id ASC LIMIT 1) AS first_msg,
+		(SELECT m3.content FROM chat_messages m3 WHERE m3.session_id = s.id ORDER BY m3.id DESC LIMIT 1) AS last_msg
+	FROM chat_sessions s
+	ORDER BY COALESCE((SELECT MAX(m4.id) FROM chat_messages m4 WHERE m4.session_id = s.id), 0) DESC, s.created_at DESC`
+
+// ListSessions 分页返回会话列表（按最近消息倒序，空会话置底）及总数。
+func (s *sqlStore) ListSessions(ctx context.Context, page, pageSize int) ([]SessionSummary, int64, error) {
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_sessions`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := listSessionQuery
+	var args []any
+	if pageSize > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, pageSize, (page-1)*pageSize)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]SessionSummary, 0)
+	for rows.Next() {
+		var (
+			sum         SessionSummary
+			created     string
+			lastAt      sql.NullString
+			first, last sql.NullString
+			count       int64
+		)
+		if err := rows.Scan(&sum.ID, &created, &count, &lastAt, &first, &last); err != nil {
+			return nil, 0, err
+		}
+		ct, err := parseTime(created)
+		if err != nil {
+			return nil, 0, fmt.Errorf("parse created_at: %w", err)
+		}
+		sum.CreatedAt = ct
+		sum.MessageCount = int(count)
+		if lastAt.Valid {
+			lt, err := parseTime(lastAt.String)
+			if err != nil {
+				return nil, 0, fmt.Errorf("parse last message time: %w", err)
+			}
+			sum.LastMessageAt = lt
+		}
+		sum.FirstMessage = truncate(first.String)
+		sum.LastMessage = truncate(last.String)
+		out = append(out, sum)
+	}
+	return out, total, rows.Err()
+}
+
+// truncate 将消息内容截断为列表预览（含省略号总长 ≤80 字），空串保持不变。
+func truncate(s string) string {
+	const maxPreview = 80
+	runes := []rune(s)
+	if len(runes) <= maxPreview {
+		return s
+	}
+	return string(runes[:maxPreview-1]) + "…"
+}
+
+// Ping 探测数据库连通性。
+func (s *sqlStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
+// CountSessions 返回会话总数。
+func (s *sqlStore) CountSessions(ctx context.Context) (int64, error) {
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_sessions`).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// CountCollectorsByStatus 按状态分组统计 Collector 数。
+func (s *sqlStore) CountCollectorsByStatus(ctx context.Context) (map[CollectorStatus]int64, error) {
+	return countGrouped[CollectorStatus](ctx, s, "collectors", "status")
+}
+
+// CountTasksByStatus 按状态分组统计任务数。
+func (s *sqlStore) CountTasksByStatus(ctx context.Context) (map[TaskStatus]int64, error) {
+	return countGrouped[TaskStatus](ctx, s, "tasks", "status")
+}
+
+// countGrouped 执行 SELECT <column>, COUNT(*) FROM <table> GROUP BY <column>。
+type groupKey interface {
+	~string
+}
+
+func countGrouped[K groupKey](ctx context.Context, s *sqlStore, table, column string) (map[K]int64, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s, COUNT(*) FROM %s GROUP BY %s`, column, table, column))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[K]int64)
+	for rows.Next() {
+		var (
+			k     string
+			count int64
+		)
+		if err := rows.Scan(&k, &count); err != nil {
+			return nil, err
+		}
+		out[K(k)] = count
+	}
+	return out, rows.Err()
 }
 
 // ---- AgentRuns ----

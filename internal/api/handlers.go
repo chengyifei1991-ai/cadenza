@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 chengyifei
+
 // Package api 实现 REST API（Web 前端用）与主 HTTP 路由装配：
 // /v1/opamp（OpAMP 协议）、/mcp（MCP Server）、/api/v1/*（REST）。
 package api
@@ -12,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chengyifei1991-ai/opamp-backend/internal/agent"
-	"github.com/chengyifei1991-ai/opamp-backend/internal/store"
-	"github.com/chengyifei1991-ai/opamp-backend/internal/task"
-	"github.com/chengyifei1991-ai/opamp-backend/internal/validator"
+	"github.com/chengyifei1991-ai/cadenza/internal/agent"
+	"github.com/chengyifei1991-ai/cadenza/internal/store"
+	"github.com/chengyifei1991-ai/cadenza/internal/task"
+	"github.com/chengyifei1991-ai/cadenza/internal/validator"
 )
 
 // maxPageSize 是分页 page_size 的上限，防止一次拉取全表。
@@ -215,6 +218,8 @@ func (h *Handlers) ApproveTask(w http.ResponseWriter, r *http.Request, id string
 	if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Approver != "" {
 		approver = req.Approver
 	}
+	// Web 登录态下审批人绑定当前登录用户；off 模式退化为请求体/默认值。
+	approver = approverOf(r, approver)
 	result, err := h.deps.DispatchApprove(r.Context(), id, approver)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -240,10 +245,8 @@ func (h *Handlers) RejectTask(w http.ResponseWriter, r *http.Request, id string)
 		writeError(w, http.StatusBadRequest, "请求体解析失败")
 		return
 	}
-	approver := req.Approver
-	if approver == "" {
-		approver = "user"
-	}
+	// Web 登录态下审批人绑定当前登录用户；off 模式退化为请求体/默认值。
+	approver := approverOf(r, req.Approver)
 	t, err := h.tasks.Reject(r.Context(), id, approver, req.Reason)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -406,6 +409,18 @@ func (h *Handlers) ListVersions(w http.ResponseWriter, r *http.Request, uid stri
 }
 
 // --- helpers ---
+
+// approverOf 决定任务操作者：优先 request context 中的登录用户（Web 鉴权
+// simple 模式），其次请求体传入值，最后兜底 "user"（兼容 off 模式与既有调用方）。
+func approverOf(r *http.Request, body string) string {
+	if u := usernameFrom(r); u != "" {
+		return u
+	}
+	if body != "" {
+		return body
+	}
+	return "user"
+}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
