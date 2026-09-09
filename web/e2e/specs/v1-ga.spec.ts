@@ -8,7 +8,8 @@ async function login(page: import("@playwright/test").Page) {
   await expect(page).toHaveURL(/\/login/); // 登录保护重定向
   await page.getByPlaceholder("用户名").fill(ADMIN.username);
   await page.getByPlaceholder("密码").fill(ADMIN.password);
-  await page.getByRole("button", { name: "登录" }).click();
+  // 注：AntD 会在恰两汉字按钮文本间插空格（"登录"→"登 录"），用 Enter 提交避免文案匹配
+  await page.getByPlaceholder("密码").press("Enter");
   await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible();
   // 关闭首次引导弹窗（避免遮挡后续点击；各用例独立浏览器上下文）
   const closeBtn = page.getByRole("button", { name: /关闭（不再显示）/ });
@@ -23,10 +24,10 @@ test("登录保护：未登录被重定向，错误口令报错，正确登录�
   await expect(page).toHaveURL(/\/login/);
   await page.getByPlaceholder("用户名").fill(ADMIN.username);
   await page.getByPlaceholder("密码").fill("wrong-pass");
-  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByPlaceholder("密码").press("Enter");
   await expect(page.getByText("用户名或密码错误")).toBeVisible();
   await page.getByPlaceholder("密码").fill(ADMIN.password);
-  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByPlaceholder("密码").press("Enter");
   await expect(page.getByRole("heading", { name: "仪表盘" })).toBeVisible();
 });
 
