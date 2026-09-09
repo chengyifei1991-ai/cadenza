@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cadenza:1.0.0
+    image: cadenza:1.0.0-rc.1
     container_name: cadenza-backend
     restart: unless-stopped
     environment:

@@ -26,7 +26,7 @@
 
 ### 变更
 
-- 产品版本升至 **1.0.0**（V1 GA 基线）。
+- 产品版本定为 **1.0.0-rc.1**（语义版本预发布基线；ui-e2e 全绿后转正式 v1.0.0）。
 
 - 开源合规补全：填充 LICENSE 版权声明、新增 `THIRD_PARTY_NOTICES.md` 与 `licenses/`、源码加 SPDX 头、Docker 镜像随附许可文件。
 - 新增治理文档：`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`、`GOVERNANCE.md`。
