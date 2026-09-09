@@ -80,6 +80,10 @@ export DEMO_MODE=true                   # 可选：空库注入演示数据（�
   Vite 已配置 `/api` 代理到 8080，同源免 CORS）。
 - 鉴权：默认 `WEB_AUTH_MODE=simple`（单管理员登录）；`WEB_AUTH_MODE=off` 免登，
   仅限本地/演示环境。纯后端部署（无 Web）可设 `DISABLE_WEB=true`。
+- **容器化（前后端分离）**：见 [`docker-compose.ga.yml`](./docker-compose.ga.yml)
+  （backend 容器 + nginx 托管 `web/dist` 并反代 `/api /mcp /v1/opamp /healthz`；
+  `npm --prefix web run build` 后 `docker compose -f docker-compose.ga.yml up -d --build`，
+  浏览器访问 http://localhost:8081）。
 - 页面路线图与 PRD 见 [`docs/product-plan.md`](./docs/product-plan.md) 与
   [`docs/web-frontend-prd.md`](./docs/web-frontend-prd.md)。
 

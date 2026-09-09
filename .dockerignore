@@ -1,0 +1,24 @@
+# 本地/CI 忽略（容器构建与打包勿携带）
+.git/
+.gocache/
+.gopath/
+.pw-browsers/
+.pnpm-store/
+.npm-cache/
+bin/
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/
+web/e2e/test-results/
+data/
+*.db
+*.db-shm
+*.db-wal
+.env
+docs/.obsidian/
+.obsidian/
+.build/
+.tmp-*/
+internal/webui/static/*
+!internal/webui/static/index.html
