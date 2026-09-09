@@ -6,7 +6,40 @@
     <title>Cadenza — OpAMP 统一管控台</title>
   </head>
   <body>
-    <div id="root"></div>
+    <style>
+      #boot-note { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+        font: 14px system-ui; color: #666; background: #f5f5f5; }
+    </style>
+    <div id="root"><div id="boot-note">Cadenza 加载中…</div></div>
+    <script>
+      // 页内自诊断：JS 报错/未执行时直接显示在页面上，替代白屏盲查
+      (function () {
+        var note = document.getElementById("boot-note");
+        function show(msg) {
+          if (note) {
+            note.style.color = "#c00";
+            note.style.fontWeight = "bold";
+            note.textContent = msg;
+          }
+          try { document.title = "Cadenza[异常] " + msg.slice(0, 60); } catch (e) {}
+        }
+        window.addEventListener("error", function (e) {
+          window.__cadErr = (e.message || "unknown") + " @" + String(e.filename || "").split("/").pop() + ":" + (e.lineno || "?");
+          show("JS 异常： " + window.__cadErr);
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason;
+          window.__cadErr = "unhandledrejection: " + ((r && r.message) || r || "unknown");
+          show("Promise 未处理： " + window.__cadErr);
+        });
+        setTimeout(function () {
+          if (document.getElementById("boot-note")) {
+            show("启动未完成：JS 未成功执行。最近错误：" + (window.__cadErr || "无记录（请 F12 查看 Console）"));
+          }
+        }, 8000);
+      })();
+    </script>
+    <noscript><div id="boot-note">需要启用 JavaScript 才能使用 Cadenza。</div></noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

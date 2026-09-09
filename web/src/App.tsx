@@ -6,6 +6,7 @@ import zhCN from "antd/locale/zh_CN";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { AuthGate, AuthProvider, RedirectIfAuthed, RequireAuth } from "./app/auth";
+import ErrorBoundary from "./components/ErrorBoundary";
 import AppShell from "./app/AppShell";
 import PlaceholderPage from "./pages/PlaceholderPage";
 
@@ -73,6 +74,7 @@ function AppRoutes() {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <ConfigProvider locale={zhCN}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
@@ -82,5 +84,6 @@ export default function App() {
         </BrowserRouter>
       </QueryClientProvider>
     </ConfigProvider>
+    </ErrorBoundary>
   );
 }

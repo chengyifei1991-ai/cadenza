@@ -19,17 +19,8 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return undefined;
-          if (id.includes("@tanstack")) return "query";
-          if (id.includes("antd") || id.includes("@ant-design") || id.includes("/rc-")) return "antd";
-          if (id.includes("react") || id.includes("scheduler")) return "react";
-          return "vendor";
-        },
-      },
-    },
+    // V1 GA：回归单包构建（自定义 manualChunks 曾致浏览器端 React 互操作异常：
+    // antd 读取 React 版本时得到 undefined）。后续再以手动验证过的方式安全拆包。
   },
   test: {
     setupFiles: ["./src/setupTests.ts"],
