@@ -36,7 +36,8 @@ test("仪表盘（演示模式）：统计与待审批提醒可见，引导可�
   await expect(page.getByText("演示数据模式（DEMO_MODE=true）")).toBeVisible();
   await expect(page.getByText("Collector 总数")).toBeVisible();
   await expect(page.getByText(/个任务待审批/)).toBeVisible();
-  // Onboarding 首次弹窗 → 关闭并标记完成
+  // Onboarding：login() 已把首次弹窗关闭并标记完成；这里经“重新打开引导”再断言
+  await page.getByRole("button", { name: "重新打开引导" }).click();
   await expect(page.getByRole("dialog").getByText("欢迎使用 Cadenza")).toBeVisible();
   await page.getByRole("button", { name: /关闭（不再显示）/ }).click();
   // 最近任务速览含演示任务
