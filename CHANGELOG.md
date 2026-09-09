@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-09
 
 ### 新增
 
@@ -16,17 +17,18 @@
     `/auth/*`、`/system/info`、`/healthz`。
   - 演示数据（`DEMO_MODE=true`）、`CORS_ALLOWED_ORIGINS`、`WEB_DIR/DISABLE_WEB`。
 - 可复用测试体系：E2E 黑盒回归（`tests/e2e.sh`，simple/off 双模式）+ 前端 Vitest（纯函数 + DOM）+
-  Playwright UI 冒烟（V1 GA 门禁）；`cmd/cadenza-passwd` 口令哈希工具。
+  Playwright UI 冒烟（1.0.0 GA 门禁）；`cmd/cadenza-passwd` 口令哈希工具。
 
 ### 修复
 
 - 静态资源 SPA fallback：缺失的带扩展名资源返回 404（避免误回退为 HTML）。
 - 登录空凭据 400；审批/拒绝不存在的任务返回 404 中文（不再泄漏英文内部错误）。
 - 容器健康检查改用公开 `/healthz`（原 `/api/v1/collectors` 在登录保护下会 401）。
+- 生产浏览器白屏：前端改单包构建（自定义分包破坏 React 互操作），并加启动自诊断/错误边界/反代超时硬化。
 
 ### 变更
 
-- 产品版本定为 **1.0.0-rc.1**（语义版本预发布基线；ui-e2e 全绿后转正式 v1.0.0）。
+- 产品正式发布 **v1.0.0（GA）**：此前以 `v1.0.0-rc.1` 预发布基线收敛，ui-e2e 全绿门禁通过后转为正式版；Docker 镜像 tag 同步为 `cadenza:1.0.0`。
 
 - 开源合规补全：填充 LICENSE 版权声明、新增 `THIRD_PARTY_NOTICES.md` 与 `licenses/`、源码加 SPDX 头、Docker 镜像随附许可文件。
 - 新增治理文档：`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`、`GOVERNANCE.md`。

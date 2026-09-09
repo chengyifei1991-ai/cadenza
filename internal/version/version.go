@@ -6,4 +6,4 @@
 package version
 
 // Version 是当前产品版本号（语义化版本）。
-const Version = "1.0.0-rc.1"
+const Version = "1.0.0"
