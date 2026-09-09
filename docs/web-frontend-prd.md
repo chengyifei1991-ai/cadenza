@@ -41,7 +41,7 @@ cadenza/
 
 ## 3. API 契约矩阵（前端依赖清单）
 
-> 状态列：✅ 已有（v1 后端）｜🆕 M0 P0 新增（见 design-web-p0.md）｜⬜ V1.5+。
+> 状态列：✅ 已有（后端 0.1.0）｜🆕 M0 P0 新增（见 design-web-p0.md）｜⬜ 1.1.0+。
 
 | 方法/路径 | 用途 | 状态 | 消费页面 | 刷新策略 |
 |---|---|---|---|---|
@@ -92,7 +92,7 @@ cadenza/
 
 ### 5.4 Collectors 列表（M1）
 - 数据源：`GET /collectors`（分页信封）。
-- 内容：instance_uid、hostname、version、status（StatusTag）、last_seen_at、group；筛：状态；搜：uid/主机名子串（前端过滤，V2 后端化）；行点击进详情。
+- 内容：instance_uid、hostname、version、status（StatusTag）、last_seen_at、group；筛：状态；搜：uid/主机名子串（前端过滤，1.1.0 后端化）；行点击进详情。
 - 验收：分页/筛选/空态；状态与颜色映射表唯一。
 
 ### 5.5 Collector 详情 + 版本历史（M2）
@@ -148,9 +148,9 @@ cadenza/
 `AuthGuard`、`PollBadge`（连接/刷新指示）。
 
 ## 8. 文案与主题
-- 中文主文案（错误即后端 `{error}` 原文）；i18n 结构从第一天以 key 化引入，EN 文案 V1 GA 前补快速路径
-  （登录/导航/核心动作），完整 EN 待 V2（遗留待决 9.4）。
-- AntD 默认主题 + 品牌色微调；暗色模式 V2。
+- 中文主文案（错误即后端 `{error}` 原文）；i18n 结构从第一天以 key 化引入，EN 快速路径（登录/导航/核心动作）
+  1.0.0 GA 后补齐，完整 EN 待 1.2.0（遗留待决 9.4）。
+- AntD 默认主题 + 品牌色微调；暗色模式 1.2.0。
 
 ## 9. 质量门槛（每里程碑 Gate）
 - `pnpm lint`（eslint+tsc strict）零错误；Vitest 覆盖状态映射/时间格式化/契约解析等纯逻辑。

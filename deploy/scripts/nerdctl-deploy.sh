@@ -10,7 +10,7 @@
 set -euo pipefail
 
 NERDCTL="${NERDCTL:-/mnt/wsl/rancher-desktop/bin/nerdctl}"
-IMAGE="cadenza:1.0.0-rc.1"
+IMAGE="cadenza:1.0.0"
 NAME="cadenza"
 PORT="${PORT:-8080}"
 BASE_IMAGE="alpine:3.22"
