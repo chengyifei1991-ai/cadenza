@@ -121,7 +121,14 @@ func validateWithOtelcol(binPath, content string) (Result, error) {
 		return res, fmt.Errorf("关闭临时配置失败：%w", err)
 	}
 
-	cmd := exec.Command(binPath, "validate", "--config", tmp.Name())
+	args := []string{"validate", "--config", tmp.Name()}
+	// 配置含 opamp 扩展且声明 accepts_restart_command 时，0.156 的
+	// opampextension 要求启用 RemoteRestarts 特性门才允许该能力——
+	// 仅当内容出现 opamp 时附带特性门（避免对不含 opamp 的普通配置造成影响）。
+	if strings.Contains(content, "opamp") {
+		args = append(args, "--feature-gates", "extension.opampextension.RemoteRestarts")
+	}
+	cmd := exec.Command(binPath, args...)
 	// 限制校验执行时间，避免挂起。
 	if err := cmd.Run(); err != nil {
 		if _, statErr := os.Stat(binPath); statErr != nil {

@@ -1,4 +1,4 @@
-# Cadenza 1.0.0 GA — 前后端分离容器部署（docker compose / nerdctl compose 均可）
+# Cadenza 1.0.1 — 前后端分离容器部署（docker compose / nerdctl compose 均可）
 #
 #   backend : cadenza 单后端（OpAMP/MCP/REST，演示数据 DEMO_MODE，免登 WEB_AUTH_MODE=off）
 #   web     : nginx 托管前端静态（挂载 web/dist）+ 反代 /api /mcp /v1/opamp /healthz
@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cadenza:1.0.0
+    image: cadenza:1.0.1
     container_name: cadenza-backend
     restart: unless-stopped
     environment:

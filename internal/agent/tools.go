@@ -474,9 +474,15 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 		}
 		return nil, err
 	}
+	var unconfirmed []string
 	for _, c := range collectors {
-		if err := d.OpAMP.PushConfig(ctx, c.InstanceUID, t.GeneratedYAML); err != nil {
-			d.log().Warn("approve 下发失败", "task_id", taskID, "instance_uid", c.InstanceUID, "error", err)
+		confirmed, perr := pushAndConfirm(ctx, d.OpAMP, d.Registry, c.InstanceUID, t.GeneratedYAML, defaultDispatchConfirmTimeout)
+		if perr != nil {
+			d.log().Warn("approve 下发失败", "task_id", taskID, "instance_uid", c.InstanceUID, "error", perr)
+			continue
+		}
+		if !confirmed {
+			unconfirmed = append(unconfirmed, c.InstanceUID)
 		}
 		d.recordConfigVersion(ctx, c.InstanceUID, t.GeneratedYAML)
 	}
@@ -484,6 +490,13 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 		return nil, err
 	}
 	d.audit(ctx, approver, store.AuditActionApply, taskID, validator.Hash(t.GeneratedYAML))
+	if len(unconfirmed) > 0 {
+		// 已下发但未收到 Agent 生效回报：显式告警，任务本身不下发失败语义。
+		msg := "已下发，但未收到生效确认（Agent 未回报新配置）: " + strings.Join(unconfirmed, ",")
+		d.setTaskError(ctx, taskID, msg)
+		d.audit(ctx, approver, store.AuditActionApply, taskID, "生效确认超时: "+strings.Join(unconfirmed, ","))
+		d.log().Warn("approve 下发后未收到生效确认", "task_id", taskID, "instances", unconfirmed)
+	}
 	return map[string]any{"task_id": taskID, "status": string(store.TaskStatusDone), "message": fmt.Sprintf("已下发到 %d 个 Collector", len(collectors))}, nil
 }
 
@@ -510,18 +523,37 @@ func (d *Deps) dispatchRollback(ctx context.Context, t *store.Task, approver str
 	if target.CollectorInstanceUID != t.TargetInstanceUID {
 		return nil, fmt.Errorf("版本 %d 不属于该 Collector", t.RollbackVersionID)
 	}
-	if err := d.OpAMP.PushConfig(ctx, t.TargetInstanceUID, target.YAML); err != nil {
+	confirmed, perr := pushAndConfirm(ctx, d.OpAMP, d.Registry, t.TargetInstanceUID, target.YAML, defaultDispatchConfirmTimeout)
+	if perr != nil {
 		if _, setErr := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusFailed); setErr != nil {
 			d.log().Warn("标记任务失败状态出错", "task_id", t.ID, "error", setErr)
 		}
-		return nil, fmt.Errorf("回滚下发失败: %w", err)
+		return nil, fmt.Errorf("回滚下发失败: %w", perr)
 	}
 	d.recordConfigVersion(ctx, t.TargetInstanceUID, target.YAML)
 	if _, err := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusDone); err != nil {
 		return nil, err
 	}
 	d.audit(ctx, approver, store.AuditActionRollback, t.ID, validator.Hash(target.YAML))
+	if !confirmed {
+		msg := "已回滚下发，但未收到生效确认（Agent 未回报新配置）"
+		d.setTaskError(ctx, t.ID, msg)
+		d.audit(ctx, approver, store.AuditActionRollback, t.ID, "生效确认超时")
+		d.log().Warn("回滚下发后未收到生效确认", "task_id", t.ID, "instance_uid", t.TargetInstanceUID)
+	}
 	return map[string]any{"task_id": t.ID, "status": string(store.TaskStatusDone), "message": "已回滚到历史版本"}, nil
+}
+
+// setTaskError 在任务上记录非致命告警信息（状态保持 done，error 字段展示原因）。
+func (d *Deps) setTaskError(ctx context.Context, taskID, msg string) {
+	t, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return
+	}
+	t.Error = msg
+	if err := d.Store.UpdateTask(ctx, t); err != nil {
+		d.log().Warn("记录任务告警失败", "task_id", taskID, "error", err)
+	}
 }
 
 // recordConfigVersion 下发成功后写入版本快照（回滚闭环地基），
