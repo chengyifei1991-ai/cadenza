@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **下发生效确认**（`已下发 ≠ 已生效`）：审批下发后等待 Agent 的生效回报——标准客户端走
+  `RemoteConfigStatus(APPLIED)` 哈希比对，opampextension 这类只上报展开后 effective 的客户端
+  走"推送内容 ⊆ 上报内容"语义子集判定；超时在任务上告警"已下发但未收到生效确认"，不再静默成功。
+- **重启命令补发**：首段未确认且 Agent 声明 `AcceptsRestartCommand` 时，按协议先发 RemoteConfig、
+  再**单独**补发 `RestartCommand`（同消息带 Command 时客户端会忽略 RemoteConfig）。
+- **真机门禁**：`tests/real-collector-gate.sh` + `tests/supervisor-fixture`（opamp-go 实现的最小
+  supervisor），用真实 otelcol-contrib 断言"进程级换配置"：重启、端口迁移、effective.yaml 重写、回滚、审计。
+
+### 修复
+
+- OpAMP 服务端在缺少上报时置 `ReportFullState` 标志：修复 Collector 重连后只发增量状态导致
+  effective config 缺失、状态被判为 unknown。
+- 配置深度校验在内容含 opamp 时附带 `extension.opampextension.RemoteRestarts` 特性门，
+  避免声明 `accepts_restart_command` 的合法配置被误判为非法。
+
+
 ## [1.0.0] - 2026-09-09
 
 ### 新增

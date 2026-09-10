@@ -113,9 +113,32 @@ func (s *Server) onMessage(ctx context.Context, conn types.Connection, msg *prot
 	c := s.collectorFromMessage(uid, msg)
 	c.LastSeenAt = time.Now().UTC()
 	s.reg.Upsert(c, conn)
+	// 记录能力位与远端配置 ack（下发确认与重启命令下发用）。
+	s.reg.SetCapabilities(uid, msg.GetCapabilities())
+	if rc := msg.RemoteConfigStatus; rc != nil && len(rc.LastRemoteConfigHash) > 0 {
+		hashHex := hex.EncodeToString(rc.LastRemoteConfigHash)
+		switch rc.Status {
+		case protobufs.RemoteConfigStatuses_RemoteConfigStatuses_APPLIED:
+			// Agent 回报"已应用该配置"，记下其哈希用于下发生效确认。
+			s.reg.SetReportedHash(uid, hashHex)
+		case protobufs.RemoteConfigStatuses_RemoteConfigStatuses_FAILED:
+			// Agent 应用失败：清除旧 ack，避免误判为已生效。
+			s.reg.SetReportedHash(uid, "")
+		}
+	}
+	if msg.EffectiveConfig != nil && msg.EffectiveConfig.ConfigMap != nil {
+		// Agent 实际上报的生效配置：单独记录，供下发生效确认
+		// （与 recordConfigVersion 写入的"服务端意图值"区分开）。
+		s.reg.SetReportedEffective(uid, configMapToString(msg.EffectiveConfig.ConfigMap))
+	}
 	resp := &protobufs.ServerToAgent{
 		InstanceUid:  msg.InstanceUid,
 		Capabilities: serverCapabilities,
+	}
+	// 尚未收到该 Collector 上报的 effective config（如刚重连、Agent 只发增量状态）时，
+	// 按协议置 ReportFullState 标志要求其上报完整状态——下发生效确认依赖该上报。
+	if _, ok := s.reg.ReportedEffective(uid); !ok {
+		resp.Flags = uint64(protobufs.ServerToAgentFlags_ServerToAgentFlags_ReportFullState)
 	}
 	// HTTP 拉取模式下，若存在待下发配置则随本次响应下发。
 	if cfg := s.takePending(uid); cfg != "" {
@@ -263,6 +286,40 @@ func (s *Server) setPending(uid, yamlContent string) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	s.pending[uid] = yamlContent
+}
+
+// SendRestart 向在线且声明接受重启命令的 Collector 发送 RestartCommand。
+// 用于 opampextension 等"收到远端配置后需重启命令才真正应用"的 Agent：
+// 必须先发 RemoteConfig（PushConfig），再单独发重启命令（同消息带 Command
+// 时 Agent 会忽略 RemoteConfig）。
+func (s *Server) SendRestart(ctx context.Context, instanceUID string) bool {
+	if !s.reg.Online(instanceUID) || !s.reg.AcceptsRestartCommand(instanceUID) {
+		return false
+	}
+	uidBytes, err := hex.DecodeString(instanceUID)
+	if err != nil {
+		s.logger.Warn("opamp: 非法 instance_uid，跳过重启命令", "instance_uid", instanceUID)
+		return false
+	}
+	msg := &protobufs.ServerToAgent{
+		InstanceUid: uidBytes,
+		Command:     &protobufs.ServerToAgentCommand{},
+	}
+	if err := connSend(ctx, s.reg, instanceUID, msg); err != nil {
+		s.logger.Warn("opamp: 发送重启命令失败", "instance_uid", instanceUID, "error", err)
+		return false
+	}
+	s.logger.Info("opamp: 已发送重启命令", "instance_uid", instanceUID)
+	return true
+}
+
+// connSend 经注册表取连接并发送（与 PushConfig 同一发送路径）。
+func connSend(ctx context.Context, reg *Registry, instanceUID string, msg *protobufs.ServerToAgent) error {
+	conn, ok := reg.Conn(instanceUID)
+	if !ok {
+		return fmt.Errorf("Collector 不在线")
+	}
+	return conn.Send(ctx, msg)
 }
 
 // takePending 取出并清除指定 Collector 的待下发配置。

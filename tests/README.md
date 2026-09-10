@@ -69,3 +69,16 @@ E2E_AUTH=off ./tests/e2e.sh
 
 `.github/workflows/ci.yml` 的 `e2e` job 在构建（含前端 embed）后以
 `E2E_AUTH=simple` 与 `E2E_AUTH=off` 各跑一遍，作为合并门禁。
+
+## 真机门禁（真实 Collector 下发生效）
+
+`tests/real-collector-gate.sh` 用**真实 otelcol-contrib** 验证"下发生效"而非仅"发送成功"：
+
+```bash
+./tests/real-collector-gate.sh                  # 默认 /usr/bin/otelcol-contrib，缺失则 SKIP
+COLLECTOR_BIN=/path/to/otelcol-contrib ./tests/real-collector-gate.sh
+```
+
+配套 `tests/supervisor-fixture`（opamp-go client 实现的最小 supervisor）负责把远端配置落到文件、
+重启 collector 子进程并回报生效状态。脚本断言：注册上报 → 下发确认（error 为空）→ 端口真实迁移
+→ 子进程重启 → 回滚切回 → 审计留痕。运行日志在 `.build/gate-run/`。

@@ -95,3 +95,27 @@ REQUIRE_APPROVAL=true（P3-2 重建时改为 false）
 
 - 对话生成配置（generate_config 成功路径）依赖真实 LLM key，本计划以故障隔离路径覆盖；真实 key 提供后补测成功路径。
 - otelcol-contrib 深度校验在容器内未配置二进制，自动降级 yaml 校验（P3-4 用 yaml 级校验验证拒绝）。
+
+---
+
+## 1.0.x 真机门禁（可复现，2026-09-10）
+
+> 上面的 P0–P5 是 2026-08-16 的实验性验证（服务端为 0.1.0 容器、一次性）。1.0 GA 后按同样思路复测，
+> 发现关键语义缺口：**服务端"已下发"不等于 Collector"已生效"**；且独立 opampextension 收到远端配置
+> 只回报 effective（认账），"重启"仍用原 argv 的旧配置文件（不上身）。故引入可复现门禁。
+
+- **入口**：`./tests/real-collector-gate.sh`（依赖 `otelcol-contrib`，缺失自动 SKIP）
+- **组成**：`tests/supervisor-fixture` —— 用 opamp-go client 实现的最小 supervisor：
+  收到远端配置 → 重写配置文件 → 重启 collector 子进程 → 回报 `RemoteConfigStatus(APPLIED)` 与 effective。
+  这正是真实 opampsupervisor 的模型（管理进程负责让配置真正生效）。
+- **断言（17 项，连续两轮 17/17 通过）**：
+  1. 真实 collector 注册 / healthy / version / effective 上报；
+  2. 下发同配置 → 任务 done 且收到生效确认（error 为空）；
+  3. 下发端口变更（14321 → 14322）→ 子进程重启、新端口监听、旧端口释放、effective.yaml 重写、
+     服务端 effective_config 更新；
+  4. 回滚历史版本 → 配置与端口真实切回；
+  5. 审计含 apply / approve / rollback。
+- **配套服务端修复（1.0.x）**：下发生效确认（ack 哈希 / effective 覆盖 + 超时告警）、按能力位补发
+  `RestartCommand`、缺失上报时 `ReportFullState`、校验器特性门修正。
+- **部署启示**：生产接入请使用 opampsupervisor 模型（或等价的"自管 collector 生命周期"客户端）；
+  直接用 opampextension 时，服务端虽能下发并收到 ack，但**进程级生效不由服务端保证**。
