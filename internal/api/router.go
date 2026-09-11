@@ -90,6 +90,11 @@ func (r *Router) apiMux() *http.ServeMux {
 	mux.HandleFunc("/api/v1/sessions", h.HandleSessions)
 	mux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, req *http.Request) {
 		parts := splitPath(req.URL.Path)
+		// /api/v1/sessions/{id}/tasks：会话发起的任务（任务↔会话绑定）。
+		if len(parts) == 5 && parts[4] == "tasks" {
+			h.ListSessionTasks(w, req, parts[3])
+			return
+		}
 		if len(parts) != 4 {
 			writeError(w, http.StatusNotFound, "未知路径")
 			return

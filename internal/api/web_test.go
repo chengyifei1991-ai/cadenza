@@ -187,7 +187,7 @@ func TestApplyTask(t *testing.T) {
 		})
 	}
 	// 合法提交应产生一条 awaiting_approval 任务。
-	tasks, _, err := h.store.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
+	tasks, _, err := h.store.ListTasks(ctx, store.TaskFilter{Status: store.TaskStatusAwaitingApproval}, 0, 0)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("待审批任务数 = %d, err = %v, want 1", len(tasks), err)
 	}

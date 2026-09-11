@@ -113,6 +113,13 @@ func (s *sqlStore) initSchema() error {
 	if err := s.ensureColumn("tasks", "rollback_version_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// 幂等迁移：tasks 新增 session_id（任务↔会话绑定，1.1.0-b）。
+	if err := s.ensureColumn("tasks", "session_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id)`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -365,11 +372,11 @@ func (s *sqlStore) CreateTask(ctx context.Context, t *Task) error {
 		return fmt.Errorf("marshal approvers: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, target_group_id,
+		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML,
-		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver, t.RejectReason,
+		t.SessionID, t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver, t.RejectReason,
 		t.ModelUsed, t.Error, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt))
 	return err
 }
@@ -381,10 +388,10 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 	}
 	t.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(ctx, `
-		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, target_group_id=?,
+		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, session_id=?, target_group_id=?,
 			target_instance_uid=?, rollback_version_id=?, approvers=?, approver=?, reject_reason=?, model_used=?, error=?, updated_at=?
 		WHERE id = ?`,
-		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML,
+		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.SessionID,
 		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver,
 		t.RejectReason, t.ModelUsed, t.Error, fmtTime(t.UpdatedAt), t.ID)
 	return err
@@ -392,26 +399,50 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 
 func (s *sqlStore) GetTask(ctx context.Context, id string) (*Task, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
+		SELECT id, type, status, require_approval, input, generated_yaml, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
 		FROM tasks WHERE id = ?`, id)
 	return scanTask(row)
 }
 
-// ListTasks 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
-func (s *sqlStore) ListTasks(ctx context.Context, status TaskStatus, page, pageSize int) ([]Task, int64, error) {
+// ListTasks 按过滤条件分页返回任务列表（created_at 降序）及过滤后总数。
+func (s *sqlStore) ListTasks(ctx context.Context, f TaskFilter, page, pageSize int) ([]Task, int64, error) {
+	conds := make([]string, 0, 6)
+	args := make([]any, 0, 8)
+	if f.Status != "" {
+		conds = append(conds, "status = ?")
+		args = append(args, string(f.Status))
+	}
+	if f.Type != "" {
+		conds = append(conds, "type = ?")
+		args = append(args, string(f.Type))
+	}
+	if f.Target != "" {
+		conds = append(conds, "(target_instance_uid = ? OR target_group_id = ?)")
+		args = append(args, f.Target, f.Target)
+	}
+	if f.SessionID != "" {
+		conds = append(conds, "session_id = ?")
+		args = append(args, f.SessionID)
+	}
+	if !f.Since.IsZero() {
+		conds = append(conds, "created_at >= ?")
+		args = append(args, fmtTime(f.Since))
+	}
+	if !f.Until.IsZero() {
+		conds = append(conds, "created_at <= ?")
+		args = append(args, fmtTime(f.Until))
+	}
 	where := ""
-	var args []any
-	if status != "" {
-		where = " WHERE status = ?"
-		args = append(args, string(status))
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	var total int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	query := `
-		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
+		SELECT id, type, status, require_approval, input, generated_yaml, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
 		FROM tasks` + where + ` ORDER BY created_at DESC`
 	if pageSize > 0 {
@@ -441,7 +472,7 @@ func scanTask(sc rowScanner) (*Task, error) {
 		reqApproval  int
 		created, upd string
 	)
-	if err := sc.Scan(&t.ID, &t.Type, &t.Status, &reqApproval, &t.Input, &t.GeneratedYAML,
+	if err := sc.Scan(&t.ID, &t.Type, &t.Status, &reqApproval, &t.Input, &t.GeneratedYAML, &t.SessionID,
 		&t.TargetGroupID, &t.TargetInstanceUID, &t.RollbackVersionID, &approvers, &t.Approver,
 		&t.RejectReason, &t.ModelUsed, &t.Error, &created, &upd); err != nil {
 		return nil, mapNoRows(err)

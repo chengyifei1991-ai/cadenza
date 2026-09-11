@@ -46,7 +46,7 @@ func TestSeedEmptyAndIdempotent(t *testing.T) {
 		if len(collectors) != 5 {
 			t.Errorf("%s: collectors = %d, want 5", stage, len(collectors))
 		}
-		tasks, _, err := st.ListTasks(ctx, "", 0, 0)
+		tasks, _, err := st.ListTasks(ctx, store.TaskFilter{}, 0, 0)
 		if err != nil {
 			t.Fatalf("%s: ListTasks 失败: %v", stage, err)
 		}
@@ -65,7 +65,7 @@ func TestSeedEmptyAndIdempotent(t *testing.T) {
 			t.Errorf("%s: sessions = %d/%d, err = %v, want 1", stage, len(sessions), total, err)
 		}
 		// 至少有一条待审批任务可供演示审批流。
-		awaiting, _, err := st.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
+		awaiting, _, err := st.ListTasks(ctx, store.TaskFilter{Status: store.TaskStatusAwaitingApproval}, 0, 0)
 		if err != nil || len(awaiting) != 1 {
 			t.Errorf("%s: awaiting_approval = %d, err = %v, want 1", stage, len(awaiting), err)
 		}

@@ -1,18 +1,5 @@
 // 统一 fetch 客户端与类型化 API（契约清单见 docs/web-frontend-prd.md §3）。
-import type {
-  AuditLog,
-  AuthMode,
-  ChatSession,
-  Collector,
-  ConfigVersion,
-  Me,
-  PageEnvelope,
-  SessionSummary,
-  Stats,
-  SystemInfo,
-  Task,
-  TaskStatus,
-} from "./types";
+import type { AuditLog, AuthMode, ChatSession, Collector, ConfigVersion, Me, PageEnvelope, SessionSummary, Stats, SystemInfo, Task, TaskStatus, TaskType } from "./types";
 
 const BASE = ""; // 同源部署；开发期由 Vite proxy 转发 /api。
 
@@ -92,9 +79,14 @@ export const api = {
   },
 
   // 任务
-  listTasks(params: { status?: TaskStatus } & ListParams = {}): Promise<PageEnvelope<Task>> {
+  listTasks(
+    params: { status?: TaskStatus; type?: TaskType; target?: string; session_id?: string } & ListParams = {},
+  ): Promise<PageEnvelope<Task>> {
     const q = new URLSearchParams();
     if (params.status) q.set("status", params.status);
+    if (params.type) q.set("type", params.type);
+    if (params.target) q.set("target", params.target);
+    if (params.session_id) q.set("session_id", params.session_id);
     if (params.page) q.set("page", String(params.page));
     if (params.page_size) q.set("page_size", String(params.page_size));
     return request<PageEnvelope<Task>>(`/api/v1/tasks?${q}`);
@@ -108,16 +100,16 @@ export const api = {
   rejectTask(id: string, reason: string): Promise<unknown> {
     return request(`/api/v1/tasks/${id}/reject`, { method: "POST", body: { reason } });
   },
-  rollbackTask(collectorInstanceUid: string, versionId: number): Promise<Task> {
+  rollbackTask(collectorInstanceUid: string, versionId: number, sessionId?: string): Promise<Task> {
     return request<Task>("/api/v1/tasks/rollback", {
       method: "POST",
-      body: { collector_instance_uid: collectorInstanceUid, version_id: versionId },
+      body: { collector_instance_uid: collectorInstanceUid, version_id: versionId, session_id: sessionId },
     });
   },
-  applyTask(collectorInstanceUid: string, yaml: string, note?: string): Promise<Task> {
+  applyTask(collectorInstanceUid: string, yaml: string, note?: string, sessionId?: string): Promise<Task> {
     return request<Task>("/api/v1/tasks/apply", {
       method: "POST",
-      body: { collector_instance_uid: collectorInstanceUid, yaml, note },
+      body: { collector_instance_uid: collectorInstanceUid, yaml, note, session_id: sessionId },
     });
   },
 
@@ -139,6 +131,12 @@ export const api = {
   },
   getSession(id: string): Promise<ChatSession> {
     return request<ChatSession>(`/api/v1/sessions/${id}`);
+  },
+  /** 会话发起的任务（任务↔会话硬绑定，替代前端文本正则联动）。 */
+  listSessionTasks(id: string): Promise<PageEnvelope<Task>> {
+    return request<PageEnvelope<Task>>(
+      `/api/v1/sessions/${encodeURIComponent(id)}/tasks?page=1&page_size=20`,
+    );
   },
   chat(sessionId: string | undefined, message: string): Promise<{ session_id: string; reply: string }> {
     return request("/api/v1/chat", {

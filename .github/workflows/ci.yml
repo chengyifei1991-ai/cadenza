@@ -32,6 +32,11 @@ jobs:
           npm --prefix web run build
           node web/scripts/embed.mjs
 
+      - name: Frontend typecheck & unit tests（Vitest）
+        run: |
+          npm --prefix web run typecheck
+          npm --prefix web test
+
       - name: Build
         run: go build ./...
 

@@ -17,7 +17,7 @@ import {
   Typography,
   message,
 } from "antd";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { CommentOutlined, PlusOutlined, RobotOutlined, SendOutlined } from "@ant-design/icons";
 import { api, ApiError } from "../api/client";
 import type { ChatMessage, SessionSummary, Task } from "../api/types";
@@ -35,7 +35,9 @@ const EXAMPLES = [
 
 export default function AssistantPage() {
   const qc = useQueryClient();
-  const [currentId, setCurrentId] = useState<string | null>(null);
+  // 支持 /assistant?session=<id> 深链（任务详情"所属会话"回跳）。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [currentId, setCurrentId] = useState<string | null>(searchParams.get("session"));
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
@@ -52,7 +54,27 @@ export default function AssistantPage() {
     queryFn: () => api.getSession(currentId as string),
     enabled: Boolean(currentId),
   });
+
+  // 会话发起的任务（任务↔会话硬绑定）：不再依赖回复文本正则。
+  const boundTasks = useQuery({
+    queryKey: ["session-tasks", currentId],
+    queryFn: () => api.listSessionTasks(currentId as string),
+    enabled: Boolean(currentId),
+  });
   const messages: ChatMessage[] = history.data?.messages ?? [];
+  // 合并：会话硬绑定任务在前，文本正则命中且未绑定的任务在后（兼容历史会话）。
+  const boundList: Task[] = boundTasks.data?.items ?? [];
+  const boundIds = new Set(boundList.map((t) => t.id));
+  const linkedTasks: Task[] = [...boundList, ...tracked.filter((t) => !boundIds.has(t.id))];
+
+  useEffect(() => {
+    // 会话切换时同步 URL（便于分享/回跳）。
+    const next = new URLSearchParams(searchParams);
+    if (currentId) next.set("session", currentId);
+    else next.delete("session");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentId]);
 
   useEffect(() => {
     // jsdom 无 scrollTo 实现，做存在性守卫（真实浏览器平滑滚动到最新消息）。
@@ -82,6 +104,7 @@ export default function AssistantPage() {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["sessions"] }),
         qc.invalidateQueries({ queryKey: ["session", resp.session_id || currentId] }),
+        qc.invalidateQueries({ queryKey: ["session-tasks", resp.session_id || currentId] }),
       ]);
     },
     onError: (err: unknown) => {
@@ -102,6 +125,9 @@ export default function AssistantPage() {
     try {
       await chat.mutateAsync(text);
       setInput("");
+    } catch {
+      // 失败态已由 mutation 的 onError 呈现（降级横幅/错误提示）；
+      // 此处吞掉拒绝，避免 fire-and-forget 调用产生未捕获的 Promise 拒绝。
     } finally {
       setSending(false);
     }
@@ -220,13 +246,13 @@ export default function AssistantPage() {
             )}
           </div>
 
-          {tracked.length > 0 && (
+          {linkedTasks.length > 0 && (
             <div style={{ margin: "8px 0" }}>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                对话创建/关联的任务：
+                本会话创建/关联的任务：
               </Typography.Text>
               <Space wrap style={{ marginTop: 4 }}>
-                {tracked.map((t) => (
+                {linkedTasks.map((t) => (
                   <Tag key={t.id} icon={<CommentOutlined />} style={{ padding: "2px 8px" }}>
                     <Link to={`/tasks/${t.id}`} style={{ textDecoration: "none" }}>
                       [{TASK_TYPE_LABEL[t.type] ?? t.type}] {TASK_STATUS[t.status]?.label ?? t.status}

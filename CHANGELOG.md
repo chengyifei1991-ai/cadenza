@@ -6,6 +6,17 @@
 
 ### 新增
 
+- **任务 ↔ 会话硬绑定（1.1.0-b）**：`Task` 新增 `session_id`（旧库幂等迁移 + 索引）——
+  Orchestrator 在 ReAct 循环前把会话 ID 注入 ctx，Agent 工具创建任务时回写；REST
+  `apply`/`rollback` 支持可选 `session_id`；新增 `GET /api/v1/sessions/{id}/tasks` 与
+  `GET /api/v1/tasks?session_id=`，前端助手页改为"会话绑定任务优先 + 文本正则兜底"，
+  任务详情可回跳所属会话（`/assistant?session=<id>`）。
+- **任务列表后端筛选（1.1.0-c 前置）**：`TaskFilter` 化 `Store.ListTasks`，支持
+  `status`/`type`/`target`/`session_id`/`since`/`until`（时间接受 RFC3339 或 Unix 秒）；
+  非法时间参数返回 400。
+- **前端单测接入 CI 门禁**：新增 typecheck + `vitest run` 步骤；修复 `AssistantPage.send()`
+  未捕获拒绝（fire-and-forget 调用产生的 2 处 unhandled rejection，此前 `npm test` 退出码为 1）。
+
 - **MCP 鉴权 token（1.1.0-a）**：新增 `MCP_AUTH_TOKEN` 配置——非空时 `/mcp` 要求
   `Authorization: Bearer <token>`（常量时间比较，未认证返回 401 中文错误）；为空时保持 1.0 的
   开箱即用行为并在启动日志告警。`/api/v1/system/info` 新增 `mcp_auth` 标记供前端设置页展示；

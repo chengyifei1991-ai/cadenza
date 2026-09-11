@@ -103,11 +103,11 @@ func TestTaskCRUD(t *testing.T) {
 	if got.Status != TaskStatusAwaitingApproval {
 		t.Errorf("UpdateTask 未生效: %q", got.Status)
 	}
-	pending, _, err := st.ListTasks(ctx, TaskStatusAwaitingApproval, 0, 0)
+	pending, _, err := st.ListTasks(ctx, TaskFilter{Status: TaskStatusAwaitingApproval}, 0, 0)
 	if err != nil || len(pending) != 1 {
 		t.Errorf("ListTasks(awaiting) = %v, err = %v", pending, err)
 	}
-	done, _, _ := st.ListTasks(ctx, TaskStatusDone, 0, 0)
+	done, _, _ := st.ListTasks(ctx, TaskFilter{Status: TaskStatusDone}, 0, 0)
 	if len(done) != 0 {
 		t.Errorf("ListTasks(done) 应为空: %v", done)
 	}
@@ -221,7 +221,7 @@ func TestListTasksPage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items, total, err := st.ListTasks(ctx, tt.status, tt.page, tt.pageSize)
+			items, total, err := st.ListTasks(ctx, TaskFilter{Status: tt.status}, tt.page, tt.pageSize)
 			if err != nil {
 				t.Fatalf("ListTasksPage 失败: %v", err)
 			}
@@ -296,5 +296,110 @@ func TestListCollectorsPage(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Errorf("len(items) = %d, want 2", len(items))
+	}
+}
+
+// TestTaskSessionBindingAndFilter 验证任务↔会话绑定：
+//   - session_id 幂等迁移（旧库无该列时自动补齐，旧数据可读且 session_id 为空）；
+//   - TaskFilter 按会话与状态过滤。
+func TestTaskSessionBindingAndFilter(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	st := newTestStore(t)
+
+	// 旧库形态：先建不含 session_id 的 tasks 表并写入历史任务，再走 store 初始化迁移。
+	sqlSt, ok := st.(*sqlStore)
+	if !ok {
+		t.Fatalf("期望 *sqlStore，实际 %T", st)
+	}
+	if _, err := sqlSt.db.Exec(`DROP TABLE tasks`); err != nil {
+		t.Fatalf("drop tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`CREATE TABLE tasks (
+		id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,
+		require_approval INTEGER NOT NULL DEFAULT 1, input TEXT NOT NULL DEFAULT '',
+		generated_yaml TEXT NOT NULL DEFAULT '', target_group_id TEXT NOT NULL DEFAULT '',
+		approvers TEXT NOT NULL DEFAULT '[]', approver TEXT NOT NULL DEFAULT '',
+		reject_reason TEXT NOT NULL DEFAULT '', model_used TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create legacy tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`INSERT INTO tasks (id, type, status, input, created_at, updated_at)
+		VALUES ('legacy-1','generate','pending','旧任务', ?, ?)`, fmtTime(now.Add(-3*time.Hour)), fmtTime(now.Add(-3*time.Hour))); err != nil {
+		t.Fatalf("insert legacy: %v", err)
+	}
+	if err := sqlSt.initSchema(); err != nil {
+		t.Fatalf("initSchema（迁移）失败: %v", err)
+	}
+
+	// 旧数据仍可读，session_id 为空。
+	legacy, err := st.GetTask(ctx, "legacy-1")
+	if err != nil {
+		t.Fatalf("GetTask(legacy): %v", err)
+	}
+	if legacy.SessionID != "" {
+		t.Errorf("旧任务 session_id 应为空，实际 %q", legacy.SessionID)
+	}
+
+	// 绑定会话的任务。
+	bound := &Task{
+		ID: "bound-1", Type: TaskTypeGenerate, Status: TaskStatusAwaitingApproval,
+		SessionID: "sess-123", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateTask(ctx, bound); err != nil {
+		t.Fatalf("CreateTask(bound): %v", err)
+	}
+	got, err := st.GetTask(ctx, "bound-1")
+	if err != nil {
+		t.Fatalf("GetTask(bound): %v", err)
+	}
+	if got.SessionID != "sess-123" {
+		t.Errorf("session_id 回读 = %q, want sess-123", got.SessionID)
+	}
+
+	// 过滤：按会话。
+	items, total, err := st.ListTasks(ctx, TaskFilter{SessionID: "sess-123"}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(session): %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].ID != "bound-1" {
+		t.Errorf("会话过滤结果不符: total=%d items=%+v", total, items)
+	}
+
+	// 过滤：会话 + 状态（命中）。
+	_, total, err = st.ListTasks(ctx, TaskFilter{SessionID: "sess-123", Status: TaskStatusAwaitingApproval}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(session+status): %v", err)
+	}
+	if total != 1 {
+		t.Errorf("会话+状态过滤 total = %d, want 1", total)
+	}
+
+	// 过滤：状态不匹配为空。
+	_, total, err = st.ListTasks(ctx, TaskFilter{SessionID: "sess-123", Status: TaskStatusDone}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(session+done): %v", err)
+	}
+	if total != 0 {
+		t.Errorf("不匹配状态应无结果，total = %d", total)
+	}
+
+	// 过滤：时间区间（仅近 1 小时 → 命中 bound-1，不含 legacy-1）。
+	_, total, err = st.ListTasks(ctx, TaskFilter{Since: now.Add(-time.Hour)}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(since): %v", err)
+	}
+	if total != 1 {
+		t.Errorf("时间下界过滤 total = %d, want 1", total)
+	}
+
+	// 更新时保留 session_id。
+	bound.Status = TaskStatusDone
+	if err := st.UpdateTask(ctx, bound); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	got, _ = st.GetTask(ctx, "bound-1")
+	if got.SessionID != "sess-123" {
+		t.Errorf("UpdateTask 后 session_id = %q, want sess-123", got.SessionID)
 	}
 }

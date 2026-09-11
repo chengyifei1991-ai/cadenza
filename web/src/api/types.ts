@@ -54,6 +54,8 @@ export interface Task {
   require_approval: boolean;
   input: string;
   generated_yaml?: string;
+  /** 发起该任务的 AI 会话 ID（会话内创建时回写；非会话发起的任务为空）。 */
+  session_id?: string;
   target_group_id?: string;
   target_instance_uid?: string;
   rollback_version_id?: number;

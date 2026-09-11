@@ -366,6 +366,35 @@ else
   fail "回滚后 effective_config 应被更新且不含 memory_limiter（实际: $(printf '%s' "$EFFECT" | head -c 80 | tr '\n' ' ')）"
 fi
 
+section "16. 任务↔会话绑定（1.1.0-b）"
+req POST /api/v1/sessions --cookie "$CJ" --data '{}'
+check_code "创建会话 → 200" 200
+SESS_ID=$(jget "['session_id']")
+SESS_PAYLOAD=$(python3 - "$SESS_ID" "$VALID_YAML" <<'PY'
+import json, sys
+print(json.dumps({"collector_instance_uid": "demo-gateway-1", "yaml": sys.argv[2],
+                  "note": "e2e 会话绑定", "session_id": sys.argv[1]}))
+PY
+)
+req POST /api/v1/tasks/apply --cookie "$CJ" --data "$SESS_PAYLOAD"
+check_code "带 session_id 提交 apply → 201" 201
+check_json_eq "['session_id']" "$SESS_ID" "任务回写 session_id"
+SESS_TASK_ID=$(jget "['id']")
+
+req GET "/api/v1/sessions/$SESS_ID/tasks?page=1&page_size=10" --cookie "$CJ"
+check_code "会话任务列表 → 200" 200
+check_json_eq "['total']" "1" "会话任务数=1"
+check_json_eq "['items'][0]['id']" "$SESS_TASK_ID" "会话任务即刚提交的任务"
+
+req GET "/api/v1/tasks?session_id=$SESS_ID&page=1&page_size=10" --cookie "$CJ"
+check_json_eq "['total']" "1" "任务列表按 session_id 过滤命中 1 条"
+
+req GET "/api/v1/sessions/no-such-session/tasks" --cookie "$CJ"
+check_code "未知会话任务列表 → 404" 404
+
+req GET "/api/v1/tasks?since=not-a-time" --cookie "$CJ"
+check_code "非法 since 参数 → 400" 400
+
 section "14. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'

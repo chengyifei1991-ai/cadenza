@@ -210,6 +210,7 @@ func (d *Deps) handleGenerateConfig(ctx context.Context, args map[string]any) (a
 		Status:          store.TaskStatusPending,
 		RequireApproval: d.Config.RequireApproval,
 		Input:           desc,
+		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   target,
 	}
 	if err := d.Tasks.Create(ctx, t); err != nil {
@@ -351,6 +352,7 @@ func (d *Deps) handleOptimizeConfig(ctx context.Context, args map[string]any) (a
 		Status:          store.TaskStatusPending,
 		RequireApproval: d.Config.RequireApproval,
 		Input:           desc,
+		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   uid,
 	}
 	if err := d.Tasks.Create(ctx, t); err != nil {
@@ -424,6 +426,7 @@ func (d *Deps) handleUpgrade(ctx context.Context, args map[string]any) (any, err
 		Status:          store.TaskStatusAwaitingApproval,
 		RequireApproval: true,
 		Input:           fmt.Sprintf("升级 target=%s 到版本 %s", target, version),
+		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   target,
 	}
 	if err := d.Tasks.Create(ctx, t); err != nil {
@@ -603,7 +606,7 @@ func (d *Deps) handleReject(ctx context.Context, args map[string]any) (any, erro
 
 // handleListPending 实现 list_pending_tasks。
 func (d *Deps) handleListPending(ctx context.Context, args map[string]any) (any, error) {
-	tasks, _, err := d.Store.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
+	tasks, _, err := d.Store.ListTasks(ctx, store.TaskFilter{Status: store.TaskStatusAwaitingApproval}, 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("查询任务失败: %w", err)
 	}

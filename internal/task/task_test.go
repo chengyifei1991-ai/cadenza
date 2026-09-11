@@ -68,7 +68,7 @@ func (f *fakeStore) GetTask(_ context.Context, id string) (*store.Task, error) {
 	}
 	return t, nil
 }
-func (f *fakeStore) ListTasks(_ context.Context, _ store.TaskStatus, _, _ int) ([]store.Task, int64, error) {
+func (f *fakeStore) ListTasks(_ context.Context, _ store.TaskFilter, _, _ int) ([]store.Task, int64, error) {
 	return nil, 0, nil
 }
 func (f *fakeStore) Close() error { return nil }

@@ -17,7 +17,7 @@ function json(body: unknown, status = 200): Response {
 
 const TASK_ID = "1a0710caaef1afb91d4e20743e0";
 
-function stubRoutes(opts: { reply?: string; chatStatus?: number } = {}) {
+function stubRoutes(opts: { reply?: string; chatStatus?: number; boundTasks?: unknown[] } = {}) {
   const routes = {
     sessions: false,
     sessionDetail: false,
@@ -40,6 +40,11 @@ function stubRoutes(opts: { reply?: string; chatStatus?: number } = {}) {
         page: 1,
         page_size: 20,
       });
+    }
+    // 会话发起的任务（任务↔会话绑定端点）
+    if (method === "GET" && /\/api\/v1\/sessions\/[^/]+\/tasks/.test(url)) {
+      const items = opts.boundTasks ?? [];
+      return json({ items, total: items.length, page: 1, page_size: 20 });
     }
     const sessMatch = url.match(/\/api\/v1\/sessions\/([\w-]+)$/);
     if (method === "GET" && sessMatch) {

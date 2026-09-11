@@ -159,21 +159,25 @@ func (h *Handlers) resolveSession(ctx context.Context, sessionID string) (*store
 
 // --- 任务 ---
 
-// ListTasks 处理 GET /api/v1/tasks?status=&page=&page_size=。
+// ListTasks 处理 GET /api/v1/tasks?status=&type=&target=&session_id=&since=&until=&page=&page_size=。
 // 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。
 func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
 		return
 	}
-	status := store.TaskStatus(r.URL.Query().Get("status"))
+	filter, err := taskFilterFromQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	page, pageSize, enabled, err := pageParams(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if enabled {
-		items, total, perr := h.store.ListTasks(r.Context(), status, page, pageSize)
+		items, total, perr := h.store.ListTasks(r.Context(), filter, page, pageSize)
 		if perr != nil {
 			writeError(w, http.StatusInternalServerError, "查询任务失败")
 			return
@@ -181,12 +185,47 @@ func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pageResponse[store.Task]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
-	tasks, _, err := h.store.ListTasks(r.Context(), status, 0, 0)
+	tasks, _, err := h.store.ListTasks(r.Context(), filter, 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询任务失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, tasks)
+}
+
+// taskFilterFromQuery 解析任务列表过滤参数（全部可选，零值=不过滤）。
+func taskFilterFromQuery(r *http.Request) (store.TaskFilter, error) {
+	q := r.URL.Query()
+	f := store.TaskFilter{
+		Status:    store.TaskStatus(strings.TrimSpace(q.Get("status"))),
+		Type:      store.TaskType(strings.TrimSpace(q.Get("type"))),
+		Target:    strings.TrimSpace(q.Get("target")),
+		SessionID: strings.TrimSpace(q.Get("session_id")),
+	}
+	var err error
+	if f.Since, err = parseTimeParam(q.Get("since")); err != nil {
+		return f, fmt.Errorf("since 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	if f.Until, err = parseTimeParam(q.Get("until")); err != nil {
+		return f, fmt.Errorf("until 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	return f, nil
+}
+
+// parseTimeParam 解析时间过滤参数：接受 RFC3339 或 Unix 秒（纯数字）；空串为零值。
+func parseTimeParam(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return time.Unix(n, 0).UTC(), nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.UTC(), nil
 }
 
 // GetTask 处理 GET /api/v1/tasks/{id}。
@@ -349,6 +388,8 @@ func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 type RollbackRequest struct {
 	CollectorInstanceUID string `json:"collector_instance_uid"`
 	VersionID            int64  `json:"version_id"`
+	// SessionID 是发起该回滚的 AI 会话（可选；会话内发起时回传）。
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // RollbackTask 处理 POST /api/v1/tasks/rollback：
@@ -395,6 +436,7 @@ func (h *Handlers) RollbackTask(w http.ResponseWriter, r *http.Request) {
 		Status:            store.TaskStatusAwaitingApproval,
 		RequireApproval:   true,
 		Input:             fmt.Sprintf("回滚 %s 到版本 %d", req.CollectorInstanceUID, req.VersionID),
+		SessionID:         req.SessionID,
 		TargetInstanceUID: req.CollectorInstanceUID,
 		RollbackVersionID: req.VersionID,
 	}

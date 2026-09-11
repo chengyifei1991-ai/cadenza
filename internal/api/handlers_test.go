@@ -348,7 +348,7 @@ func TestRollbackTask(t *testing.T) {
 		})
 	}
 	// 成功创建的任务应处于 awaiting_approval 且带回滚字段。
-	tasks, _, _ := h.store.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
+	tasks, _, _ := h.store.ListTasks(ctx, store.TaskFilter{Status: store.TaskStatusAwaitingApproval}, 0, 0)
 	if len(tasks) != 1 {
 		t.Fatalf("应创建 1 个待审批回滚任务，got %d", len(tasks))
 	}

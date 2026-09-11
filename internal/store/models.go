@@ -120,6 +120,9 @@ type Task struct {
 	Input string `json:"input"`
 	// GeneratedYAML 是生成/待下发的配置内容。
 	GeneratedYAML string `json:"generated_yaml"`
+	// SessionID 是发起该任务的 AI 会话 ID（会话内创建的任务）；
+	// 为空表示非会话发起（如 REST/MCP 直调）。
+	SessionID string `json:"session_id,omitempty"`
 	// TargetGroupID 是目标分组 ID（generate/optimize 任务使用）。
 	TargetGroupID string `json:"target_group_id"`
 	// TargetInstanceUID 是目标 Collector 的 instance_uid（rollback/apply 任务使用）。

@@ -7,10 +7,26 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 	_ "modernc.org/sqlite"             // 纯 Go SQLite driver（无 CGO）
 )
+
+// TaskFilter 是任务列表的可选过滤条件（零值字段 = 不过滤）。
+type TaskFilter struct {
+	// Status 按任务状态精确过滤。
+	Status TaskStatus
+	// Type 按任务类型精确过滤。
+	Type TaskType
+	// Target 匹配 target_instance_uid 或 target_group_id（任一相等即命中）。
+	Target string
+	// SessionID 按发起会话过滤（任务↔会话绑定）。
+	SessionID string
+	// Since / Until 按 created_at 区间过滤（零值表示不限）。
+	Since time.Time
+	Until time.Time
+}
 
 // Store 是持久化存储的抽象接口，提供 SQLite 与 MySQL 两种实现，
 // 通过 New 工厂按驱动名切换（设计方案 v3 第 6 节）。
@@ -45,9 +61,9 @@ type Store interface {
 	UpdateTask(ctx context.Context, t *Task) error
 	// GetTask 按 ID 查询任务。
 	GetTask(ctx context.Context, id string) (*Task, error)
-	// ListTasks 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
-	// status 为空返回全部；page 从 1 开始；pageSize<=0 时返回全量。
-	ListTasks(ctx context.Context, status TaskStatus, page, pageSize int) (items []Task, total int64, err error)
+	// ListTasks 按过滤条件分页返回任务列表（created_at 降序）及过滤后总数。
+	// filter 的零值字段表示不过滤；page 从 1 开始；pageSize<=0 时返回全量。
+	ListTasks(ctx context.Context, filter TaskFilter, page, pageSize int) (items []Task, total int64, err error)
 
 	// CreateSession 创建会话。
 	CreateSession(ctx context.Context, s *ChatSession) error

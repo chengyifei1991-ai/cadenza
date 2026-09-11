@@ -142,6 +142,13 @@ export default function TaskDetailPage() {
           {t.rollback_version_id ? (
             <Descriptions.Item label="回滚目标">版本 #{t.rollback_version_id}</Descriptions.Item>
           ) : null}
+          {t.session_id && (
+            <Descriptions.Item label="所属会话">
+              <Link to={`/assistant?session=${encodeURIComponent(t.session_id)}`}>
+                {t.session_id.slice(0, 8)}…
+              </Link>
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label="创建时间">{fmtDateTime(t.created_at)}</Descriptions.Item>
           <Descriptions.Item label="更新时间">{fmtDateTime(t.updated_at)}</Descriptions.Item>
         </Descriptions>

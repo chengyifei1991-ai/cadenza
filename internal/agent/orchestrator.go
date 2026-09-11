@@ -60,6 +60,8 @@ func (o *Orchestrator) Chat(ctx context.Context, sess *store.ChatSession, userMs
 		_ = o.deps.Store.UpdateAgentRun(ctx, run)
 	}()
 
+	// 会话上下文下传：Agent 工具创建任务时回写 session_id（任务↔会话绑定）。
+	ctx = withSessionID(ctx, sess.ID)
 	messages := o.buildMessages(sess, userMsg)
 	requestTools := o.toolMap()
 

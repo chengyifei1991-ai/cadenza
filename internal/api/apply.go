@@ -22,6 +22,8 @@ type applyRequest struct {
 	YAML                 string `json:"yaml"`
 	// Note 是可选的变更说明（写入任务 Input，便于审计与前端展示）。
 	Note string `json:"note,omitempty"`
+	// SessionID 是发起该变更的 AI 会话（可选；会话内发起时回传，实现任务↔会话绑定）。
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // ApplyTask 处理 POST /api/v1/tasks/apply：
@@ -62,6 +64,7 @@ func (h *Handlers) ApplyTask(w http.ResponseWriter, r *http.Request) {
 		Status:            store.TaskStatusAwaitingApproval,
 		RequireApproval:   h.deps.Config.RequireApproval,
 		Input:             input,
+		SessionID:         req.SessionID,
 		GeneratedYAML:     req.YAML,
 		TargetInstanceUID: req.CollectorInstanceUID,
 		TargetGroupID:     req.CollectorInstanceUID,
