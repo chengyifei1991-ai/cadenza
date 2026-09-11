@@ -54,7 +54,13 @@ func (h *Handlers) ListSessionTasks(w http.ResponseWriter, r *http.Request, id s
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
 		return
 	}
-	if _, err := h.store.GetSession(r.Context(), id); err != nil {
+	// 轻量存在性校验：避免为列表校验而全量加载该会话消息（长会话开销大）。
+	exists, err := h.store.SessionExists(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询会话失败")
+		return
+	}
+	if !exists {
 		writeError(w, http.StatusNotFound, "会话不存在")
 		return
 	}

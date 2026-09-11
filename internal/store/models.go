@@ -106,6 +106,42 @@ const (
 	TaskStatusFailed TaskStatus = "failed"
 )
 
+// TaskStatuses 列出全部合法任务状态（HTTP 层参数校验用）。
+func TaskStatuses() []string {
+	return []string{"pending", "generating", "validating", "awaiting_approval", "applying", "done", "rejected", "failed"}
+}
+
+// TaskTypes 列出全部合法任务类型（HTTP 层参数校验用）。
+func TaskTypes() []string {
+	return []string{"generate", "optimize", "apply", "upgrade", "rollback"}
+}
+
+// IsValidTaskStatus 判断任务状态取值是否合法（空串表示不过滤，视为合法）。
+func IsValidTaskStatus(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, s := range TaskStatuses() {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidTaskType 判断任务类型取值是否合法（空串表示不过滤，视为合法）。
+func IsValidTaskType(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, t := range TaskTypes() {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
+
 // Task 是配置生成/下发任务的执行单元，驱动完整状态机。
 type Task struct {
 	// ID 是任务唯一标识（ULID）。

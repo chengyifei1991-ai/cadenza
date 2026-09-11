@@ -97,6 +97,8 @@ func (f *fakeStore) GetSession(context.Context, string) (*store.ChatSession, err
 	return nil, store.ErrNotFound
 }
 func (f *fakeStore) AppendMessage(context.Context, string, store.ChatMessage) error { return nil }
+
+func (f *fakeStore) SessionExists(context.Context, string) (bool, error) { return true, nil }
 func (f *fakeStore) ListSessions(context.Context, int, int) ([]store.SessionSummary, int64, error) {
 	return nil, 0, nil
 }

@@ -23,6 +23,9 @@ func MCPAuth(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := bearerTokenOf(r.Header.Get("Authorization"))
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			// MCP 客户端依赖 WWW-Authenticate 做鉴权发现（RFC 6750）；缺失时
+			// 只能笼统失败，无法提示如何携带凭证。
+			w.Header().Set("WWW-Authenticate", `Bearer realm="cadenza-mcp"`)
 			writeError(w, http.StatusUnauthorized, "未认证的 MCP 请求")
 			return
 		}

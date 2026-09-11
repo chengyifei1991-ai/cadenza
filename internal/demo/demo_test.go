@@ -64,6 +64,16 @@ func TestSeedEmptyAndIdempotent(t *testing.T) {
 		if err != nil || total != 1 || len(sessions) != 1 {
 			t.Errorf("%s: sessions = %d/%d, err = %v, want 1", stage, len(sessions), total, err)
 		}
+		// 1.1.0：演示任务应与演示会话绑定（AI 助手"本会话任务"可见）。
+		sessionsAll, _, err := st.ListSessions(ctx, 0, 0)
+		if err != nil || len(sessionsAll) == 0 {
+			t.Fatalf("%s: 无演示会话: %v", stage, err)
+		}
+		bound, _, err := st.ListTasks(ctx, store.TaskFilter{SessionID: sessionsAll[0].ID}, 0, 0)
+		if err != nil || len(bound) < 2 {
+			t.Errorf("%s: 会话绑定任务 = %d（err=%v），want >= 2", stage, len(bound), err)
+		}
+
 		// 至少有一条待审批任务可供演示审批流。
 		awaiting, _, err := st.ListTasks(ctx, store.TaskFilter{Status: store.TaskStatusAwaitingApproval}, 0, 0)
 		if err != nil || len(awaiting) != 1 {

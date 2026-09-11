@@ -196,9 +196,17 @@ func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 // taskFilterFromQuery 解析任务列表过滤参数（全部可选，零值=不过滤）。
 func taskFilterFromQuery(r *http.Request) (store.TaskFilter, error) {
 	q := r.URL.Query()
+	status := strings.TrimSpace(q.Get("status"))
+	taskType := strings.TrimSpace(q.Get("type"))
+	if !store.IsValidTaskStatus(status) {
+		return store.TaskFilter{}, fmt.Errorf("status 取值非法（合法值：%s）", strings.Join(store.TaskStatuses(), "/"))
+	}
+	if !store.IsValidTaskType(taskType) {
+		return store.TaskFilter{}, fmt.Errorf("type 取值非法（合法值：%s）", strings.Join(store.TaskTypes(), "/"))
+	}
 	f := store.TaskFilter{
-		Status:    store.TaskStatus(strings.TrimSpace(q.Get("status"))),
-		Type:      store.TaskType(strings.TrimSpace(q.Get("type"))),
+		Status:    store.TaskStatus(status),
+		Type:      store.TaskType(taskType),
 		Target:    strings.TrimSpace(q.Get("target")),
 		SessionID: strings.TrimSpace(q.Get("session_id")),
 	}

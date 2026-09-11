@@ -172,6 +172,12 @@ func (s *sqlStore) ensureColumn(table, column, decl string) error {
 // timeFmt 是时间列的统一文本格式（RFC3339Nano，SQLite/MySQL 均兼容）。
 const timeFmt = time.RFC3339Nano
 
+// secondBound 将时间截断为秒级字符串（与 substr(created_at,1,19) 同一形态），
+// 供时间区间过滤做跨驱动一致的字符串比较。
+func secondBound(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05")
+}
+
 func fmtTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -425,13 +431,18 @@ func (s *sqlStore) ListTasks(ctx context.Context, f TaskFilter, page, pageSize i
 		conds = append(conds, "session_id = ?")
 		args = append(args, f.SessionID)
 	}
+	// 时间过滤采用**秒级半开区间** [since, until+1s)：
+	// 存储格式为 RFC3339Nano（小数秒长度可变），直接对整串做字典序比较会在
+	// 精度不一致的边界处静默漏行（'Z'(0x5A) > '.'(0x2E)）。故统一截断到秒
+	// （substr(...,1,19)）后比较——SQLite/MySQL 通用的纯字符串运算。
+	// 语义：since 含下界那一秒；until 含其上界所在整秒（粒度=秒）。
 	if !f.Since.IsZero() {
-		conds = append(conds, "created_at >= ?")
-		args = append(args, fmtTime(f.Since))
+		conds = append(conds, "substr(created_at,1,19) >= ?")
+		args = append(args, secondBound(f.Since))
 	}
 	if !f.Until.IsZero() {
-		conds = append(conds, "created_at <= ?")
-		args = append(args, fmtTime(f.Until))
+		conds = append(conds, "substr(created_at,1,19) < ?")
+		args = append(args, secondBound(f.Until.Truncate(time.Second).Add(time.Second)))
 	}
 	where := ""
 	if len(conds) > 0 {
@@ -441,10 +452,12 @@ func (s *sqlStore) ListTasks(ctx context.Context, f TaskFilter, page, pageSize i
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
+	// 排序同样按秒截断 + id（ULID，时间单调）兜底：避免 RFC3339Nano 变长
+	// 小数秒导致同秒内顺序与真实时间不一致（'.' < 'Z'）。
 	query := `
 		SELECT id, type, status, require_approval, input, generated_yaml, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
-		FROM tasks` + where + ` ORDER BY created_at DESC`
+		FROM tasks` + where + ` ORDER BY substr(created_at,1,19) DESC, id DESC`
 	if pageSize > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, pageSize, (page-1)*pageSize)
@@ -539,6 +552,15 @@ func (s *sqlStore) GetSession(ctx context.Context, id string) (*ChatSession, err
 		sess.Messages = append(sess.Messages, m)
 	}
 	return &sess, rows.Err()
+}
+
+// SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。
+func (s *sqlStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_sessions WHERE id = ?`, id).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (s *sqlStore) AppendMessage(ctx context.Context, sessionID string, m ChatMessage) error {

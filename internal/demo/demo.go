@@ -128,12 +128,18 @@ func Seed(ctx context.Context, st store.Store, logger *slog.Logger) error {
 		}
 	}
 
+	// 演示会话先建，便于把"会话内创建的任务"绑定到它（1.1.0 任务↔会话绑定演示）。
+	sess := &store.ChatSession{ID: ulid.New(), CreatedAt: now.Add(-30 * time.Minute)}
+	if err := st.CreateSession(ctx, sess); err != nil {
+		return fmt.Errorf("demo: 注入会话失败: %w", err)
+	}
+
 	// 任务：覆盖"待审批 / 已完成 / 已拒绝"三种典型状态。
 	apiUID := uid("api-1")
 	tasks := []store.Task{
 		{ID: ulid.New(), Type: store.TaskTypeGenerate, Status: store.TaskStatusAwaitingApproval,
 			RequireApproval: true, Input: "为 demo-gateway-1 增加 memory_limiter（演示，等待审批）",
-			GeneratedYAML: yamlV2, TargetGroupID: gwUID, ModelUsed: "demo-model",
+			GeneratedYAML: yamlV2, TargetGroupID: gwUID, ModelUsed: "demo-model", SessionID: sess.ID,
 			CreatedAt: now.Add(-1 * time.Hour), UpdatedAt: now.Add(-55 * time.Minute)},
 		{ID: ulid.New(), Type: store.TaskTypeApply, Status: store.TaskStatusDone,
 			RequireApproval: true, Input: "直接下发基础配置到 demo-gateway-1",
@@ -141,7 +147,7 @@ func Seed(ctx context.Context, st store.Store, logger *slog.Logger) error {
 			Approver: "admin", CreatedAt: now.Add(-3 * time.Hour), UpdatedAt: now.Add(-3 * time.Hour)},
 		{ID: ulid.New(), Type: store.TaskTypeGenerate, Status: store.TaskStatusRejected,
 			RequireApproval: true, Input: "为 demo-api-1 启用 tail sampling（演示，被拒绝）",
-			GeneratedYAML: yamlV2, TargetGroupID: apiUID, Approver: "admin",
+			GeneratedYAML: yamlV2, TargetGroupID: apiUID, Approver: "admin", SessionID: sess.ID,
 			RejectReason: "当前环境无 tail_sampling 需求，先不加", ModelUsed: "demo-model",
 			CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-100 * time.Minute)},
 	}
@@ -168,11 +174,7 @@ func Seed(ctx context.Context, st store.Store, logger *slog.Logger) error {
 		}
 	}
 
-	// 会话：演示 AI 助手历史回读。
-	sess := &store.ChatSession{ID: ulid.New(), CreatedAt: now.Add(-30 * time.Minute)}
-	if err := st.CreateSession(ctx, sess); err != nil {
-		return fmt.Errorf("demo: 注入会话失败: %w", err)
-	}
+	// 会话（已在上方创建）：继续注入演示消息，供 AI 助手历史回读。
 	messages := []store.ChatMessage{
 		{Role: "user", Content: "帮我给 demo-gateway-1 增加内存限制，避免 OOM", CreatedAt: now.Add(-30 * time.Minute)},
 		{Role: "assistant", Content: "已生成带 memory_limiter 的配置并通过校验，已创建任务等待审批（演示数据）。",

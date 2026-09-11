@@ -193,9 +193,18 @@ func TestTaskFilters(t *testing.T) {
 		})
 	}
 
-	// 非法时间参数 → 400。
-	rec := doJSON(t, http.HandlerFunc(h.ListTasks), http.MethodGet, "/api/v1/tasks?since=not-a-time", nil)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("非法 since status = %d, want 400", rec.Code)
+	// 非法参数 → 400（时间与枚举一致，避免"筛无结果"被误读为"确无数据"）。
+	for _, tc := range []struct{ name, query string }{
+		{name: "非法时间参数", query: "?since=not-a-time"},
+		{name: "非法状态枚举", query: "?status=bogus"},
+		{name: "非法类型枚举", query: "?type=bogus"},
+		{name: "非法 until 参数", query: "?until=13月"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doJSON(t, http.HandlerFunc(h.ListTasks), http.MethodGet, "/api/v1/tasks"+tc.query, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

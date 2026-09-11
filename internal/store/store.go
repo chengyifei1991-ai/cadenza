@@ -69,6 +69,8 @@ type Store interface {
 	CreateSession(ctx context.Context, s *ChatSession) error
 	// GetSession 查询会话（含消息）。
 	GetSession(ctx context.Context, id string) (*ChatSession, error)
+	// SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。
+	SessionExists(ctx context.Context, id string) (bool, error)
 	// AppendMessage 向会话追加一条消息。
 	AppendMessage(ctx context.Context, sessionID string, m ChatMessage) error
 	// ListSessions 分页返回会话列表（按最近消息倒序，空会话置底）及总数。

@@ -68,6 +68,15 @@ export default function AssistantPage() {
   const linkedTasks: Task[] = [...boundList, ...tracked.filter((t) => !boundIds.has(t.id))];
 
   useEffect(() => {
+    // URL → state 反向同步：处理浏览器前进/后退，或页面已挂载时参数变化
+    // （任务详情"所属会话"跳转、外部分享链接）。仅在参数有效且与当前不同时切换，
+    // 避免与下方"state → URL"的 effect 互相触发。
+    const fromUrl = searchParams.get("session");
+    if (fromUrl && fromUrl !== currentId) setCurrentId(fromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  useEffect(() => {
     // 会话切换时同步 URL（便于分享/回跳）。
     const next = new URLSearchParams(searchParams);
     if (currentId) next.set("session", currentId);

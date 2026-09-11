@@ -54,6 +54,10 @@ func TestMCPAuth(t *testing.T) {
 				if got := rec.Body.String(); got == "" || got[0] != '{' {
 					t.Errorf("401 应返回 JSON 错误体，实际: %q", got)
 				}
+				// MCP 客户端依赖 WWW-Authenticate 做鉴权发现（F-2 回归）。
+				if www := rec.Header().Get("WWW-Authenticate"); !strings.Contains(www, "Bearer") {
+					t.Errorf("401 缺少 WWW-Authenticate: Bearer 头，实际: %q", www)
+				}
 			}
 		})
 	}

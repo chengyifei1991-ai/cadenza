@@ -403,3 +403,75 @@ func TestTaskSessionBindingAndFilter(t *testing.T) {
 		t.Errorf("UpdateTask 后 session_id = %q, want sess-123", got.SessionID)
 	}
 }
+
+// TestTaskTimeFilterSecondGranularity 是 F-1 的回归门禁：时间过滤按**秒级半开区间**
+// [since, until+1s) 比较。历史缺陷：RFC3339Nano 变长小数秒 + 字典序比较会在边界静默漏行
+// （since 漏带小数秒的行；until 漏整秒行）。
+func TestTaskTimeFilterSecondGranularity(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	seed := []struct {
+		id string
+		at time.Time
+	}{
+		{id: "whole-second", at: base},                              // 整秒
+		{id: "with-fraction", at: base.Add(500 * time.Millisecond)}, // 带小数秒（同一秒内）
+		{id: "prev-second", at: base.Add(-time.Second)},             // 上一秒
+	}
+	for _, tc := range seed {
+		if err := st.CreateTask(ctx, &Task{
+			ID: tc.id, Type: TaskTypeGenerate, Status: TaskStatusPending,
+			CreatedAt: tc.at, UpdatedAt: tc.at,
+		}); err != nil {
+			t.Fatalf("CreateTask(%s): %v", tc.id, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		filter TaskFilter
+		want   []string
+	}{
+		{
+			name:   "since=整秒边界不漏带小数秒的行",
+			filter: TaskFilter{Since: base},
+			want:   []string{"with-fraction", "whole-second"}, // created_at DESC
+		},
+		{
+			name:   "until=上一秒内不漏整秒行",
+			filter: TaskFilter{Until: base.Add(-500 * time.Millisecond)},
+			want:   []string{"prev-second"},
+		},
+		{
+			name:   "until 上界含其所在整秒（秒级粒度，过宽 <1s 属预期）",
+			filter: TaskFilter{Until: base.Add(200 * time.Millisecond)},
+			want:   []string{"with-fraction", "whole-second", "prev-second"},
+		},
+		{
+			name:   "区间组合 since=…+400ms（秒级下界含该秒）",
+			filter: TaskFilter{Since: base.Add(400 * time.Millisecond)},
+			want:   []string{"with-fraction", "whole-second"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := st.ListTasks(ctx, tc.filter, 0, 0)
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+			got := make([]string, 0, len(items))
+			for _, it := range items {
+				got = append(got, it.ID)
+			}
+			if int(total) != len(tc.want) || len(got) != len(tc.want) {
+				t.Fatalf("命中 %v(total=%d), want %v", got, total, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("命中 %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
