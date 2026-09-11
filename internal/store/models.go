@@ -182,6 +182,8 @@ type Task struct {
 
 // ChatMessage 是会话中的一条消息。
 type ChatMessage struct {
+	// ID 是消息在会话内的自增序号（keyset 分页游标）。
+	ID int64 `json:"id,omitempty"`
 	// Role 是消息角色：user / assistant。
 	Role string `json:"role"`
 	// Content 是消息内容。
@@ -280,6 +282,24 @@ const (
 	// AuditActionRollback 表示配置回滚。
 	AuditActionRollback AuditAction = "rollback"
 )
+
+// AuditActions 列出全部合法审计动作（HTTP 层参数校验用）。
+func AuditActions() []string {
+	return []string{"generate", "approve", "reject", "apply", "upgrade", "rollback"}
+}
+
+// IsValidAuditAction 判断审计动作取值是否合法（空串表示不过滤，视为合法）。
+func IsValidAuditAction(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, a := range AuditActions() {
+		if v == a {
+			return true
+		}
+	}
+	return false
+}
 
 // AuditLog 是审计记录，所有配置变更必须留痕。
 type AuditLog struct {

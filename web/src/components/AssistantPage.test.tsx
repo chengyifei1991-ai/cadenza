@@ -27,6 +27,18 @@ function stubRoutes(opts: { reply?: string; chatStatus?: number; boundTasks?: un
   // 对话记录：每次 chat 成功追加一组（服务端存储后随详情回读）
   const convo: Array<{ q: string; a: string }> = [];
   const replyText = () => opts.reply ?? `已生成配置任务 ${TASK_ID}，等待审批。`;
+  const sessionMessages = (id: string) => {
+    const msgs: Array<{ id: number; role: string; content: string; created_at: string }> = [
+      { id: 1, role: "user", content: "历史会话问题", created_at: iso },
+    ];
+    if (id === "s-1") msgs.push({ id: 2, role: "assistant", content: "历史回答", created_at: iso });
+    let next = msgs.length + 1;
+    for (const c of convo) {
+      msgs.push({ id: next++, role: "user", content: c.q, created_at: iso });
+      msgs.push({ id: next++, role: "assistant", content: c.a, created_at: iso });
+    }
+    return msgs;
+  };
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
@@ -46,16 +58,16 @@ function stubRoutes(opts: { reply?: string; chatStatus?: number; boundTasks?: un
       const items = opts.boundTasks ?? [];
       return json({ items, total: items.length, page: 1, page_size: 20 });
     }
+    // 会话消息分页端点（1.1.0-c）：与会话详情同源数据，返回 items/total 信封。
+    const msgMatch = url.match(/\/api\/v1\/sessions\/([\w-]+)\/messages/);
+    if (method === "GET" && msgMatch) {
+      const msgs = sessionMessages(msgMatch[1]);
+      return json({ items: msgs, total: msgs.length });
+    }
     const sessMatch = url.match(/\/api\/v1\/sessions\/([\w-]+)$/);
     if (method === "GET" && sessMatch) {
       routes.sessionDetail = true;
-      const msgs = [{ role: "user", content: "历史会话问题", created_at: iso }];
-      if (sessMatch[1] === "s-1") msgs.push({ role: "assistant", content: "历史回答", created_at: iso });
-      for (const c of convo) {
-        msgs.push({ role: "user", content: c.q, created_at: iso });
-        msgs.push({ role: "assistant", content: c.a, created_at: iso });
-      }
-      return json({ id: sessMatch[1], created_at: iso, messages: msgs });
+      return json({ id: sessMatch[1], created_at: iso, messages: sessionMessages(sessMatch[1]) });
     }
     if (method === "GET" && url.includes(`/api/v1/tasks/${TASK_ID}`)) {
       routes.getTask += 1;

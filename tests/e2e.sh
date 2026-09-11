@@ -395,6 +395,37 @@ check_code "未知会话任务列表 → 404" 404
 req GET "/api/v1/tasks?since=not-a-time" --cookie "$CJ"
 check_code "非法 since 参数 → 400" 400
 
+section "17. 审计筛选与会话消息分页（1.1.0-c）"
+req GET "/api/v1/audit?actor=admin&page=1&page_size=10" --cookie "$CJ"
+check_code "审计按 actor 过滤 → 200" 200
+ADMIN_TOTAL=$(python3 -c "import json;print(json.load(open('$BODY'))['total'])")
+if [ "${ADMIN_TOTAL:-0}" -ge 1 ]; then pass; else fail "actor=admin 审计应至少 1 条（实际 $ADMIN_TOTAL）"; fi
+
+req GET "/api/v1/audit?action=bogus" --cookie "$CJ"
+check_code "审计非法 action 枚举 → 400" 400
+req GET "/api/v1/audit?since=abc" --cookie "$CJ"
+check_code "审计 since 非数字（id 游标语义）→ 400" 400
+req GET "/api/v1/audit?from=not-a-time" --cookie "$CJ"
+check_code "审计非法 from 时间 → 400" 400
+req GET "/api/v1/audit?action=apply&page=1&page_size=10" --cookie "$CJ"
+check_code "审计按 action 过滤 → 200" 200
+
+# 演示会话含历史消息：校验尾部窗口取到最近 1 条且总数一致。
+DEMO_SESS=$(curl -s -b "$CJ" "$BASE/api/v1/sessions?page=1&page_size=1" | python3 -c "import sys,json;print(json.load(sys.stdin)['items'][0]['id'])")
+req GET "/api/v1/sessions/$DEMO_SESS/messages?limit=1" --cookie "$CJ"
+check_code "会话消息尾部窗口 → 200" 200
+MSG_TOTAL=$(python3 -c "import json;print(json.load(open('$BODY'))['total'])")
+MSG_ITEMS=$(python3 -c "import json;print(len(json.load(open('$BODY'))['items']))")
+if [ "${MSG_ITEMS:-0}" = "1" ] && [ "${MSG_TOTAL:-0}" -ge 1 ]; then pass; else fail "消息窗口应 1 条/总数≥1（实际 items=$MSG_ITEMS total=$MSG_TOTAL）"; fi
+# 空会话（第 16 节新建、无对话）→ 0 条，且会话本身存在。
+req GET "/api/v1/sessions/$SESS_ID/messages?limit=5" --cookie "$CJ"
+check_code "空会话消息 → 200" 200
+check_json_eq "['total']" "0" "空会话消息总数=0"
+req GET "/api/v1/sessions/$SESS_ID/messages?limit=0" --cookie "$CJ"
+check_code "消息 limit=0 越界 → 400" 400
+req GET "/api/v1/sessions/no-such-session/messages" --cookie "$CJ"
+check_code "未知会话消息 → 404" 404
+
 section "14. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'

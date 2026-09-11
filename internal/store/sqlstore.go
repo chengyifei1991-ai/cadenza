@@ -531,7 +531,7 @@ func (s *sqlStore) GetSession(ctx context.Context, id string) (*ChatSession, err
 	}
 	sess.CreatedAt = ts
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY id`, id)
+		`SELECT id, role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -541,7 +541,7 @@ func (s *sqlStore) GetSession(ctx context.Context, id string) (*ChatSession, err
 			m       ChatMessage
 			msgTime string
 		)
-		if err := rows.Scan(&m.Role, &m.Content, &msgTime); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &msgTime); err != nil {
 			return nil, err
 		}
 		t, err := parseTime(msgTime)
@@ -552,6 +552,64 @@ func (s *sqlStore) GetSession(ctx context.Context, id string) (*ChatSession, err
 		sess.Messages = append(sess.Messages, m)
 	}
 	return &sess, rows.Err()
+}
+
+// ListMessages 按 keyset 分页读取会话消息（id 升序）及会话消息总数。
+//
+// 游标语义（便于前端"加载更早"与增量刷新）：
+//   - 两者皆 0：返回**最后** limit 条（尾部窗口，按 id 升序）；
+//   - BeforeID > 0：返回 id < BeforeID 的最后 limit 条（向前翻历史）；
+//   - AfterID  > 0：返回 id > AfterID 的前 limit 条（增量刷新）。
+func (s *sqlStore) ListMessages(ctx context.Context, sessionID string, beforeID, afterID int64, limit int) ([]ChatMessage, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_messages WHERE session_id = ?`, sessionID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT id, role, content, created_at FROM chat_messages WHERE session_id = ?`
+	args := []any{sessionID}
+	switch {
+	case afterID > 0:
+		query += ` AND id > ? ORDER BY id ASC LIMIT ?`
+		args = append(args, afterID, limit)
+	case beforeID > 0:
+		query += ` AND id < ? ORDER BY id DESC LIMIT ?`
+		args = append(args, beforeID, limit)
+	default:
+		query += ` ORDER BY id DESC LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]ChatMessage, 0, limit)
+	for rows.Next() {
+		var m ChatMessage
+		var created string
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &created); err != nil {
+			return nil, 0, err
+		}
+		ts, err := parseTime(created)
+		if err != nil {
+			return nil, 0, fmt.Errorf("parse created_at: %w", err)
+		}
+		m.CreatedAt = ts
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// DESC 取窗口后翻正为时间升序返回。
+	if afterID <= 0 {
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+	return out, total, nil
 }
 
 // SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。
@@ -728,12 +786,38 @@ func (s *sqlStore) AppendAudit(ctx context.Context, a *AuditLog) error {
 }
 
 // ListAudit 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
-func (s *sqlStore) ListAudit(ctx context.Context, since int64, page, pageSize int) ([]AuditLog, int64, error) {
+func (s *sqlStore) ListAudit(ctx context.Context, f AuditFilter, page, pageSize int) ([]AuditLog, int64, error) {
+	conds := make([]string, 0, 5)
+	args := make([]any, 0, 8)
+	// 注意：SinceID 是**审计行 id 游标**（历史语义），不是时间戳。
+	if f.SinceID > 0 {
+		conds = append(conds, "id > ?")
+		args = append(args, f.SinceID)
+	}
+	if f.Actor != "" {
+		conds = append(conds, "actor = ?")
+		args = append(args, f.Actor)
+	}
+	if f.Action != "" {
+		conds = append(conds, "action = ?")
+		args = append(args, string(f.Action))
+	}
+	if f.Subject != "" {
+		conds = append(conds, "subject = ?")
+		args = append(args, f.Subject)
+	}
+	// 时间区间与任务列表同口径：秒级半开区间 [From, To+1s)（见 secondBound 注释）。
+	if !f.From.IsZero() {
+		conds = append(conds, "substr(created_at,1,19) >= ?")
+		args = append(args, secondBound(f.From))
+	}
+	if !f.To.IsZero() {
+		conds = append(conds, "substr(created_at,1,19) < ?")
+		args = append(args, secondBound(f.To.Truncate(time.Second).Add(time.Second)))
+	}
 	where := ""
-	var args []any
-	if since > 0 {
-		where = " WHERE id > ?"
-		args = append(args, since)
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	var total int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {

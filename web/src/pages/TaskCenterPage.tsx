@@ -6,8 +6,8 @@ import { Card, Select, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { api } from "../api/client";
 import ErrorState from "../components/ErrorState";
-import type { Task, TaskStatus } from "../api/types";
 import { TASK_STATUS, TASK_TYPE_LABEL } from "../lib/status";
+import type { Task, TaskStatus, TaskType } from "../api/types";
 import { fmtAgo } from "../lib/time";
 
 const PAGE_SIZE = 10;
@@ -15,11 +15,19 @@ const PAGE_SIZE = 10;
 export default function TaskCenterPage() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<TaskStatus | "">("");
+  // 服务端筛选（1.1.0-c）：类型过滤走后端，避免前端只筛当前页。
+  const [taskType, setTaskType] = useState<TaskType | "">("");
   const [page, setPage] = useState(1);
 
   const query = useQuery({
     queryKey: ["tasks", status, page],
-    queryFn: () => api.listTasks({ status: status || undefined, page, page_size: PAGE_SIZE }),
+    queryFn: () =>
+      api.listTasks({
+        status: status || undefined,
+        type: taskType || undefined,
+        page,
+        page_size: PAGE_SIZE,
+      }),
     refetchInterval: 10_000,
   });
 
@@ -57,6 +65,18 @@ export default function TaskCenterPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           任务中心
         </Typography.Title>
+        <Select
+          aria-label="类型筛选"
+          placeholder="类型筛选"
+          allowClear
+          style={{ width: 150, marginRight: 8 }}
+          value={taskType || undefined}
+          onChange={(v) => {
+            setTaskType((v as TaskType) ?? "");
+            setPage(1);
+          }}
+          options={Object.entries(TASK_TYPE_LABEL).map(([value, label]) => ({ value, label }))}
+        />
         <Select
           placeholder="状态筛选"
           allowClear

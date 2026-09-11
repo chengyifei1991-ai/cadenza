@@ -359,22 +359,28 @@ func (h *Handlers) ListCollectors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, collectors)
 }
 
-// ListAudit 处理 GET /api/v1/audit?since=&page=&page_size=。
+// ListAudit 处理 GET /api/v1/audit?actor=&action=&subject=&since=&from=&to=&page=&page_size=。
+//
+// 语义提示：`since` 是**审计行 id 游标**（历史语义，返回 id 更大的新记录），
+// 时间区间请用 `from`/`to`（RFC3339 或 Unix 秒，秒级半开区间 [from, to+1s)）。
 // 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。
 func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
 		return
 	}
-	var since int64
-	fmt.Sscanf(r.URL.Query().Get("since"), "%d", &since)
+	filter, err := auditFilterFromQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	page, pageSize, enabled, err := pageParams(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if enabled {
-		items, total, perr := h.store.ListAudit(r.Context(), since, page, pageSize)
+		items, total, perr := h.store.ListAudit(r.Context(), filter, page, pageSize)
 		if perr != nil {
 			writeError(w, http.StatusInternalServerError, "查询审计失败")
 			return
@@ -382,12 +388,41 @@ func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pageResponse[store.AuditLog]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
-	logs, _, err := h.store.ListAudit(r.Context(), since, 0, 0)
+	logs, _, err := h.store.ListAudit(r.Context(), filter, 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询审计失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)
+}
+
+// auditFilterFromQuery 解析审计列表过滤参数（全部可选）。
+// since 保持"审计行 id 游标"语义；时间过滤统一走 from/to。
+func auditFilterFromQuery(r *http.Request) (store.AuditFilter, error) {
+	q := r.URL.Query()
+	var f store.AuditFilter
+	if v := strings.TrimSpace(q.Get("since")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return f, fmt.Errorf("since 必须是审计行 id（非负整数）")
+		}
+		f.SinceID = n
+	}
+	f.Actor = strings.TrimSpace(q.Get("actor"))
+	f.Subject = strings.TrimSpace(q.Get("subject"))
+	action := strings.TrimSpace(q.Get("action"))
+	if !store.IsValidAuditAction(action) {
+		return f, fmt.Errorf("action 取值非法（合法值：%s）", strings.Join(store.AuditActions(), "/"))
+	}
+	f.Action = store.AuditAction(action)
+	var err error
+	if f.From, err = parseTimeParam(q.Get("from")); err != nil {
+		return f, fmt.Errorf("from 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	if f.To, err = parseTimeParam(q.Get("to")); err != nil {
+		return f, fmt.Errorf("to 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	return f, nil
 }
 
 // --- 回滚与版本历史 ---

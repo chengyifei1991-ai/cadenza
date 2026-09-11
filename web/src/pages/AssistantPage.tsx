@@ -49,9 +49,12 @@ export default function AssistantPage() {
     queryFn: () => api.listSessions({ page: 1, page_size: 20 }),
   });
 
+  // 会话消息走 keyset 分页端点（1.1.0-c）：默认取最近 50 条，长会话避免全量拉取。
+  // 上限 100 条（后端 limit 上限），超出提示"仅显示最近 100 条"。
+  const [msgLimit, setMsgLimit] = useState(50);
   const history = useQuery({
-    queryKey: ["session", currentId],
-    queryFn: () => api.getSession(currentId as string),
+    queryKey: ["session-messages", currentId, msgLimit],
+    queryFn: () => api.listSessionMessages(currentId as string, { limit: msgLimit }),
     enabled: Boolean(currentId),
   });
 
@@ -61,7 +64,10 @@ export default function AssistantPage() {
     queryFn: () => api.listSessionTasks(currentId as string),
     enabled: Boolean(currentId),
   });
-  const messages: ChatMessage[] = history.data?.messages ?? [];
+  const messages: ChatMessage[] = history.data?.items ?? [];
+  const totalMessages = history.data?.total ?? messages.length;
+  const hasOlder = totalMessages > messages.length;
+  const atLimit = msgLimit >= 100;
   // 合并：会话硬绑定任务在前，文本正则命中且未绑定的任务在后（兼容历史会话）。
   const boundList: Task[] = boundTasks.data?.items ?? [];
   const boundIds = new Set(boundList.map((t) => t.id));
@@ -112,7 +118,7 @@ export default function AssistantPage() {
       if (!currentId && resp.session_id) setCurrentId(resp.session_id);
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["sessions"] }),
-        qc.invalidateQueries({ queryKey: ["session", resp.session_id || currentId] }),
+        qc.invalidateQueries({ queryKey: ["session-messages", resp.session_id || currentId] }),
         qc.invalidateQueries({ queryKey: ["session-tasks", resp.session_id || currentId] }),
       ]);
     },
@@ -145,6 +151,7 @@ export default function AssistantPage() {
   const pickSession = async (id: string) => {
     setCurrentId(id);
     setTracked([]);
+    setMsgLimit(50); // 切换会话重置分页窗口
   };
   const newSession = async () => {
     const resp = await api.createSession();
@@ -232,9 +239,28 @@ export default function AssistantPage() {
             ) : history.isLoading ? (
               <Skeleton active />
             ) : (
-              messages.map((m, i) => (
-                <MessageBubble key={i} role={m.role} content={m.content} sending={m.role === "user" && i === messages.length - 1 && sending} />
-              ))
+              <>
+                {hasOlder && (
+                  <div style={{ textAlign: "center", margin: "4px 0" }}>
+                    <Button
+                      size="small"
+                      type="link"
+                      disabled={atLimit}
+                      onClick={() => setMsgLimit((n) => Math.min(100, n + 50))}
+                    >
+                      {atLimit ? "仅显示最近 100 条" : `加载更早的消息（共 ${totalMessages} 条）`}
+                    </Button>
+                  </div>
+                )}
+                {messages.map((m, i) => (
+                  <MessageBubble
+                    key={i}
+                    role={m.role}
+                    content={m.content}
+                    sending={m.role === "user" && i === messages.length - 1 && sending}
+                  />
+                ))}
+              </>
             )}
             {sending && (
               <MessageBubble role="assistant" content="" loading />

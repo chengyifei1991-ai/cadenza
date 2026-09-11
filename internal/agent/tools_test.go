@@ -148,7 +148,7 @@ func TestHandleGenerateConfigFlow(t *testing.T) {
 		t.Errorf("任务状态 = %q, want done", tk.Status)
 	}
 	// 审计留痕。
-	logs, _, err := deps.Store.ListAudit(ctx, 0, 0, 0)
+	logs, _, err := deps.Store.ListAudit(ctx, store.AuditFilter{}, 0, 0)
 	if err != nil || len(logs) < 2 {
 		t.Errorf("应有生成+审批+下发审计记录，got %d", len(logs))
 	}
@@ -239,7 +239,7 @@ func TestDispatchRollback(t *testing.T) {
 	if tk.Status != store.TaskStatusDone {
 		t.Errorf("任务状态 = %q, want done", tk.Status)
 	}
-	audits, _, _ := deps.Store.ListAudit(ctx, 0, 0, 0)
+	audits, _, _ := deps.Store.ListAudit(ctx, store.AuditFilter{}, 0, 0)
 	found := false
 	for _, a := range audits {
 		if a.Action == store.AuditActionRollback {

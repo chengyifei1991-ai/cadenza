@@ -99,6 +99,10 @@ func (f *fakeStore) GetSession(context.Context, string) (*store.ChatSession, err
 func (f *fakeStore) AppendMessage(context.Context, string, store.ChatMessage) error { return nil }
 
 func (f *fakeStore) SessionExists(context.Context, string) (bool, error) { return true, nil }
+
+func (f *fakeStore) ListMessages(context.Context, string, int64, int64, int) ([]store.ChatMessage, int64, error) {
+	return nil, 0, nil
+}
 func (f *fakeStore) ListSessions(context.Context, int, int) ([]store.SessionSummary, int64, error) {
 	return nil, 0, nil
 }
@@ -113,7 +117,7 @@ func (f *fakeStore) CountTasksByStatus(context.Context) (map[store.TaskStatus]in
 func (f *fakeStore) CreateAgentRun(context.Context, *store.AgentRun) error { return nil }
 func (f *fakeStore) UpdateAgentRun(context.Context, *store.AgentRun) error { return nil }
 func (f *fakeStore) AppendAudit(context.Context, *store.AuditLog) error    { return nil }
-func (f *fakeStore) ListAudit(context.Context, int64, int, int) ([]store.AuditLog, int64, error) {
+func (f *fakeStore) ListAudit(context.Context, store.AuditFilter, int, int) ([]store.AuditLog, int64, error) {
 	return nil, 0, nil
 }
 

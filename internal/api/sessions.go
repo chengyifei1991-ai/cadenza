@@ -4,7 +4,10 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 )
@@ -85,6 +88,72 @@ func (h *Handlers) ListSessionTasks(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// ListSessionMessages 处理 GET /api/v1/sessions/{id}/messages?before_id=&after_id=&limit=：
+// keyset 分页读取会话消息（长会话不必全量拉取）。返回 {items,total}；items 按 id 升序。
+func (h *Handlers) ListSessionMessages(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	exists, err := h.store.SessionExists(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询会话失败")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "会话不存在")
+		return
+	}
+	q := r.URL.Query()
+	beforeID, err := nonNegativeInt64(q.Get("before_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "before_id 必须为非负整数")
+		return
+	}
+	afterID, err := nonNegativeInt64(q.Get("after_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "after_id 必须为非负整数")
+		return
+	}
+	limit, err := intParamInRange(q.Get("limit"), 1, maxPageSize)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("limit 必须在 1~%d 之间", maxPageSize))
+		return
+	}
+	items, total, err := h.store.ListMessages(r.Context(), id, beforeID, afterID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询消息失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
+}
+
+// nonNegativeInt64 解析可选的非负整数参数（空串返回 0）。
+func nonNegativeInt64(v string) (int64, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("非法整数: %s", v)
+	}
+	return n, nil
+}
+
+// intParamInRange 解析可选的区间整数参数（空串返回 0 = 由调用方/存储层取默认）。
+func intParamInRange(v string, min, max int) (int, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < min || n > max {
+		return 0, fmt.Errorf("非法整数: %s", v)
+	}
+	return n, nil
 }
 
 // GetSessionByID 处理 GET /api/v1/sessions/{id}：返回会话（含全部消息）。

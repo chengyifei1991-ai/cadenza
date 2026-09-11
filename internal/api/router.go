@@ -95,6 +95,11 @@ func (r *Router) apiMux() *http.ServeMux {
 			h.ListSessionTasks(w, req, parts[3])
 			return
 		}
+		// /api/v1/sessions/{id}/messages：会话消息 keyset 分页。
+		if len(parts) == 5 && parts[4] == "messages" {
+			h.ListSessionMessages(w, req, parts[3])
+			return
+		}
 		if len(parts) != 4 {
 			writeError(w, http.StatusNotFound, "未知路径")
 			return

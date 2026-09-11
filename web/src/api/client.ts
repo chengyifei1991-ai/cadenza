@@ -1,5 +1,21 @@
 // 统一 fetch 客户端与类型化 API（契约清单见 docs/web-frontend-prd.md §3）。
-import type { AuditLog, AuthMode, ChatSession, Collector, ConfigVersion, Me, PageEnvelope, SessionSummary, Stats, SystemInfo, Task, TaskStatus, TaskType } from "./types";
+import type {
+  AuditAction,
+  AuditLog,
+  AuthMode,
+  ChatMessage,
+  ChatSession,
+  Collector,
+  ConfigVersion,
+  Me,
+  PageEnvelope,
+  SessionSummary,
+  Stats,
+  SystemInfo,
+  Task,
+  TaskStatus,
+  TaskType,
+} from "./types";
 
 const BASE = ""; // 同源部署；开发期由 Vite proxy 转发 /api。
 
@@ -114,8 +130,23 @@ export const api = {
   },
 
   // 审计 / 会话 / 统计
-  listAudit(params: ListParams = {}): Promise<PageEnvelope<AuditLog>> {
+  /** 审计列表：支持服务端筛选（操作者/动作/对象/时间区间）。 */
+  listAudit(
+    params: {
+      actor?: string;
+      action?: AuditAction;
+      subject?: string;
+      /** 时间区间（RFC3339）；后端为秒级半开区间 [from, to+1s) */
+      from?: string;
+      to?: string;
+    } & ListParams = {},
+  ): Promise<PageEnvelope<AuditLog>> {
     const q = new URLSearchParams();
+    if (params.actor) q.set("actor", params.actor);
+    if (params.action) q.set("action", params.action);
+    if (params.subject) q.set("subject", params.subject);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
     if (params.page) q.set("page", String(params.page));
     if (params.page_size) q.set("page_size", String(params.page_size));
     return request<PageEnvelope<AuditLog>>(`/api/v1/audit?${q}`);
@@ -131,6 +162,19 @@ export const api = {
   },
   getSession(id: string): Promise<ChatSession> {
     return request<ChatSession>(`/api/v1/sessions/${id}`);
+  },
+  /** 会话消息 keyset 分页：默认返回尾部窗口；before_id 向前翻历史，after_id 增量刷新。 */
+  listSessionMessages(
+    id: string,
+    params: { before_id?: number; after_id?: number; limit?: number } = {},
+  ): Promise<{ items: ChatMessage[]; total: number }> {
+    const q = new URLSearchParams();
+    if (params.before_id) q.set("before_id", String(params.before_id));
+    if (params.after_id) q.set("after_id", String(params.after_id));
+    if (params.limit) q.set("limit", String(params.limit));
+    return request<{ items: ChatMessage[]; total: number }>(
+      `/api/v1/sessions/${encodeURIComponent(id)}/messages?${q}`,
+    );
   },
   /** 会话发起的任务（任务↔会话硬绑定，替代前端文本正则联动）。 */
   listSessionTasks(id: string): Promise<PageEnvelope<Task>> {

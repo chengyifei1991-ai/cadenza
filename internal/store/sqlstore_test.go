@@ -136,12 +136,12 @@ func TestConfigVersionAndAudit(t *testing.T) {
 	if err := st.AppendAudit(ctx, &AuditLog{Actor: "alice", Action: AuditActionApply, Subject: "uid-1", Detail: "hash", CreatedAt: now}); err != nil {
 		t.Fatalf("AppendAudit 失败: %v", err)
 	}
-	logs, _, err := st.ListAudit(ctx, 0, 0, 0)
+	logs, _, err := st.ListAudit(ctx, AuditFilter{}, 0, 0)
 	if err != nil || len(logs) != 1 {
 		t.Errorf("ListAudit = %v, err = %v", logs, err)
 	}
 	// since 过滤。
-	logs, _, _ = st.ListAudit(ctx, logs[0].ID, 0, 0)
+	logs, _, _ = st.ListAudit(ctx, AuditFilter{SinceID: logs[0].ID}, 0, 0)
 	if len(logs) != 0 {
 		t.Errorf("since 过滤后应为空: %v", logs)
 	}
@@ -260,7 +260,7 @@ func TestListAuditPage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items, total, err := st.ListAudit(ctx, tt.since, tt.page, tt.pageSize)
+			items, total, err := st.ListAudit(ctx, AuditFilter{SinceID: tt.since}, tt.page, tt.pageSize)
 			if err != nil {
 				t.Fatalf("ListAuditPage 失败: %v", err)
 			}
@@ -473,5 +473,140 @@ func TestTaskTimeFilterSecondGranularity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAuditFilters 验证审计列表过滤：actor/action/subject 与时间区间（秒级半开），
+// 并确认 since 保持"审计行 id 游标"语义（F-8：不得当作时间戳解析）。
+func TestAuditFilters(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC)
+	seed := []AuditLog{
+		{Actor: "admin", Action: AuditActionApply, Subject: "task-1", Detail: "d1", CreatedAt: base.Add(-2 * time.Hour)},
+		{Actor: "agent", Action: AuditActionGenerate, Subject: "task-2", Detail: "d2", CreatedAt: base.Add(-time.Hour)},
+		{Actor: "admin", Action: AuditActionApprove, Subject: "task-2", Detail: "d3", CreatedAt: base.Add(500 * time.Millisecond)},
+	}
+	for i := range seed {
+		if err := st.AppendAudit(ctx, &seed[i]); err != nil {
+			t.Fatalf("AppendAudit: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		filter AuditFilter
+		want   []string // Detail（按 id DESC）
+	}{
+		{name: "按 actor", filter: AuditFilter{Actor: "admin"}, want: []string{"d3", "d1"}},
+		{name: "按 action", filter: AuditFilter{Action: AuditActionGenerate}, want: []string{"d2"}},
+		{name: "按 subject", filter: AuditFilter{Subject: "task-2"}, want: []string{"d3", "d2"}},
+		{name: "组合 actor+subject", filter: AuditFilter{Actor: "admin", Subject: "task-2"}, want: []string{"d3"}},
+		{name: "时间下界（含带小数秒行）", filter: AuditFilter{From: base.Add(-90 * time.Minute)}, want: []string{"d3", "d2"}},
+		{name: "时间上界（整秒行不被漏掉）", filter: AuditFilter{To: base.Add(-30 * time.Minute)}, want: []string{"d2", "d1"}},
+		{name: "since 为 id 游标（返回更新的记录）", filter: AuditFilter{SinceID: 2}, want: []string{"d3"}},
+		{name: "无匹配", filter: AuditFilter{Actor: "nobody"}, want: []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := st.ListAudit(ctx, tc.filter, 0, 0)
+			if err != nil {
+				t.Fatalf("ListAudit: %v", err)
+			}
+			got := make([]string, 0, len(items))
+			for _, it := range items {
+				got = append(got, it.Detail)
+			}
+			if int(total) != len(tc.want) || len(got) != len(tc.want) {
+				t.Fatalf("命中 %v(total=%d), want %v", got, total, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("命中 %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestListMessagesPaging 验证会话消息 keyset 分页：尾部窗口 / before_id 前翻 / after_id 增量。
+func TestListMessagesPaging(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	now := time.Now().UTC()
+	if err := st.CreateSession(ctx, &ChatSession{ID: "s-msg", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for i := 1; i <= 5; i++ {
+		if err := st.AppendMessage(ctx, "s-msg", ChatMessage{
+			Role: "user", Content: string(rune('a' + i - 1)), CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("AppendMessage(%d): %v", i, err)
+		}
+	}
+	contents := func(items []ChatMessage) []string {
+		out := make([]string, 0, len(items))
+		for _, m := range items {
+			out = append(out, m.Content)
+		}
+		return out
+	}
+	equal := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// 尾部窗口（默认游标）：最后 2 条，升序返回。
+	items, total, err := st.ListMessages(ctx, "s-msg", 0, 0, 2)
+	if err != nil {
+		t.Fatalf("ListMessages(tail): %v", err)
+	}
+	if total != 5 || !equal(contents(items), []string{"d", "e"}) {
+		t.Errorf("尾部窗口 = %v (total=%d), want [d e]", contents(items), total)
+	}
+	if items[0].ID == 0 || items[1].ID <= items[0].ID {
+		t.Errorf("消息应带自增 id 且升序: %+v", items)
+	}
+	// 消息 id 应被 GetSession 一并返回（详情页兼容）。
+	sess, err := st.GetSession(ctx, "s-msg")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if len(sess.Messages) != 5 || sess.Messages[0].ID == 0 {
+		t.Errorf("GetSession 未回填消息 id: %+v", sess.Messages[0])
+	}
+
+	// before_id 向前翻：id < 4 的最后 2 条 → b c。
+	items, _, err = st.ListMessages(ctx, "s-msg", 4, 0, 2)
+	if err != nil {
+		t.Fatalf("ListMessages(before): %v", err)
+	}
+	if !equal(contents(items), []string{"b", "c"}) {
+		t.Errorf("before_id 前翻 = %v, want [b c]", contents(items))
+	}
+
+	// after_id 增量：id > 3 → d e。
+	items, _, err = st.ListMessages(ctx, "s-msg", 0, 3, 50)
+	if err != nil {
+		t.Fatalf("ListMessages(after): %v", err)
+	}
+	if !equal(contents(items), []string{"d", "e"}) {
+		t.Errorf("after_id 增量 = %v, want [d e]", contents(items))
+	}
+
+	// 空会话：0 条。
+	if err := st.CreateSession(ctx, &ChatSession{ID: "s-empty", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateSession(empty): %v", err)
+	}
+	items, total, err = st.ListMessages(ctx, "s-empty", 0, 0, 10)
+	if err != nil || total != 0 || len(items) != 0 {
+		t.Errorf("空会话 = %v(total=%d,err=%v), want 空", contents(items), total, err)
 	}
 }

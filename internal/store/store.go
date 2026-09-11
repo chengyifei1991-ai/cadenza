@@ -28,6 +28,20 @@ type TaskFilter struct {
 	Until time.Time
 }
 
+// AuditFilter 是审计列表的可选过滤条件（零值字段 = 不过滤）。
+type AuditFilter struct {
+	// SinceID 是**审计行 id 游标**（历史语义：返回 id 更大的新记录），非时间戳。
+	// 时间区间请用 From/To。
+	SinceID int64
+	// Actor / Action / Subject 分别按操作者、动作、关联对象精确过滤。
+	Actor   string
+	Action  AuditAction
+	Subject string
+	// From / To 按 created_at 区间过滤（秒级半开区间 [From, To+1s)，零值表示不限）。
+	From time.Time
+	To   time.Time
+}
+
 // Store 是持久化存储的抽象接口，提供 SQLite 与 MySQL 两种实现，
 // 通过 New 工厂按驱动名切换（设计方案 v3 第 6 节）。
 type Store interface {
@@ -71,6 +85,9 @@ type Store interface {
 	GetSession(ctx context.Context, id string) (*ChatSession, error)
 	// SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。
 	SessionExists(ctx context.Context, id string) (bool, error)
+	// ListMessages 按 keyset 分页读取会话消息（id 升序）及会话消息总数。
+	// beforeID/afterID 游标语义见实现注释；limit<=0 时默认 50。
+	ListMessages(ctx context.Context, sessionID string, beforeID, afterID int64, limit int) (items []ChatMessage, total int64, err error)
 	// AppendMessage 向会话追加一条消息。
 	AppendMessage(ctx context.Context, sessionID string, m ChatMessage) error
 	// ListSessions 分页返回会话列表（按最近消息倒序，空会话置底）及总数。
@@ -93,9 +110,9 @@ type Store interface {
 
 	// AppendAudit 写入一条审计记录。
 	AppendAudit(ctx context.Context, a *AuditLog) error
-	// ListAudit 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
-	// since 为零值返回全部；page 从 1 开始；pageSize<=0 时返回全量。
-	ListAudit(ctx context.Context, since int64, page, pageSize int) (items []AuditLog, total int64, err error)
+	// ListAudit 按过滤条件分页返回审计记录（id 降序）及过滤后总数。
+	// filter 零值字段表示不过滤；page 从 1 开始；pageSize<=0 时返回全量。
+	ListAudit(ctx context.Context, filter AuditFilter, page, pageSize int) (items []AuditLog, total int64, err error)
 }
 
 // ErrNotFound 表示查询的记录不存在。
