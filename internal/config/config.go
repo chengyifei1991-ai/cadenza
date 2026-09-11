@@ -91,6 +91,10 @@ type Config struct {
 	// OpAMPAuthToken 是 Collector 接入认证共享 token，为空则放行。
 	OpAMPAuthToken string
 
+	// MCPAuthToken 是 MCP 端点（/mcp）的 Bearer token；为空表示不启用鉴权
+	// （启动时告警，公网部署前必须配置）。
+	MCPAuthToken string
+
 	// OtelcolBin 是 otelcol-contrib 二进制路径（锁定 v0.156.0）。
 	OtelcolBin string
 	// StrictValidate 为 true 时深度校验失败强制阻断下发。
@@ -114,6 +118,7 @@ func Load() (*Config, error) {
 		DBDSN:           getEnv("DB_DSN", ""),
 		DBSQLitePath:    getEnv("DB_SQLITE_PATH", "./data/opamp.db"),
 		OpAMPAuthToken:  os.Getenv("OPAMP_AUTH_TOKEN"),
+		MCPAuthToken:    os.Getenv("MCP_AUTH_TOKEN"),
 		OtelcolBin:      getEnv("OTELCOL_BIN", "/usr/local/bin/otelcol-contrib"),
 		StrictValidate:  getBool("STRICT_VALIDATE", false),
 		RequireApproval: getBool("REQUIRE_APPROVAL", true),

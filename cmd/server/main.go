@@ -99,14 +99,19 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	if cfg.MCPAuthToken == "" {
+		logger.Warn("MCP 端点未配置鉴权 token（MCP_AUTH_TOKEN），外部 LLM/IDE 可调用 /mcp 触发审批；公网部署前请配置")
+	}
+
 	// REST API 路由。
 	handlers := api.NewHandlers(st, taskSvc, orch, deps, logger)
 	router, err := api.NewRouter(opampSrv, mcpSrv, handlers, api.RouterOptions{
-		Auth:        authMgr,
-		WebHandler:  buildWebHandler(cfg, logger),
-		CORSOrigins: cfg.Web.CORSAllowedOrigins,
-		DemoMode:    cfg.Web.DemoMode,
-		Logger:      logger,
+		Auth:         authMgr,
+		WebHandler:   buildWebHandler(cfg, logger),
+		CORSOrigins:  cfg.Web.CORSAllowedOrigins,
+		DemoMode:     cfg.Web.DemoMode,
+		MCPAuthToken: cfg.MCPAuthToken,
+		Logger:       logger,
 	})
 	if err != nil {
 		return err

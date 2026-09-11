@@ -24,6 +24,7 @@ services:
       #   printf '你的密码' | go run ./cmd/cadenza-passwd
       #   htpasswd -bnBC 10 "" '你的密码' | tr -d ':\n'）
       # 注意：WEB_AUTH_MODE=simple（默认）时 WEB_ADMIN_PASSWORD_HASH 必填，缺失则服务拒绝启动
+      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"   # /mcp 端点 Bearer token（空=不启用，仅限可信网络）
       WEB_AUTH_MODE: "${WEB_AUTH_MODE:-simple}"
       WEB_ADMIN_USER: "${WEB_ADMIN_USER:-admin}"
       WEB_ADMIN_PASSWORD_HASH: "${WEB_ADMIN_PASSWORD_HASH:-}"

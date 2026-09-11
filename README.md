@@ -96,6 +96,7 @@ export DEMO_MODE=true                   # 可选：空库注入演示数据（�
 | `HTTP_ADDR` | `:8080` | 主 HTTP 监听地址 |
 | `DB_DRIVER` / `DB_DSN` / `DB_SQLITE_PATH` | `sqlite` | 存储：`mysql`（生产）或 `sqlite`（开发） |
 | `OPAMP_AUTH_TOKEN` | 空（放行） | Collector 接入认证 Bearer token |
+| `MCP_AUTH_TOKEN` | 空（不启用） | `/mcp` 端点 Bearer token；**公网部署必须配置**（为空时启动告警） |
 | `OTELCOL_BIN` / `STRICT_VALIDATE` | `/usr/local/bin/otelcol-contrib` / `false` | otelcol-contrib v0.156.0 深度校验 |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | DeepSeek | 主模型（OpenAI 兼容） |
 | `LLM_BACKUP_*` | 空 | 备用模型（failover 第二候选） |

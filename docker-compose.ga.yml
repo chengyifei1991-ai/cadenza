@@ -23,6 +23,7 @@ services:
       DB_DRIVER: "sqlite"
       DB_SQLITE_PATH: "/data/cadenza.db"
       DEMO_MODE: "true"
+      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"   # /mcp 端点 Bearer token（空=不启用，仅限可信网络）
       WEB_AUTH_MODE: "off"            # 本地便捷查看（对外部署请改 simple + WEB_ADMIN_PASSWORD_HASH）
       WEB_ADMIN_USER: "admin"
       WEB_ADMIN_PASSWORD_HASH: "${WEB_ADMIN_PASSWORD_HASH:-}"

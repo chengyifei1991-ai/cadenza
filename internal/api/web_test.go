@@ -272,13 +272,13 @@ func TestStatsAndSessions(t *testing.T) {
 // TestSystemInfo 验证公开系统信息端点内容。
 func TestSystemInfo(t *testing.T) {
 	am := newTestAuth(t)
-	h := SystemInfo(am, true)
+	h := SystemInfo(am, true, false)
 	rec := doJSON(t, h, http.MethodGet, "/api/v1/system/info", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("system/info status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`"auth_mode":"simple"`, `"demo_mode":true`, `"version":"1.0.1"`} {
+	for _, want := range []string{`"auth_mode":"simple"`, `"demo_mode":true`, `"version":"1.0.1"`, `"mcp_auth":false`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("system/info 缺少 %s: %s", want, body)
 		}

@@ -22,6 +22,8 @@ type RouterOptions struct {
 	CORSOrigins []string
 	// DemoMode 标记演示模式（随 /api/v1/system/info 下发，供前端横幅展示）。
 	DemoMode bool
+	// MCPAuthToken 是 MCP 端点（/mcp）的 Bearer token；为空表示不启用鉴权。
+	MCPAuthToken string
 	// Logger 是请求日志（可 nil）。
 	Logger *slog.Logger
 }
@@ -55,7 +57,7 @@ func (r *Router) Handler() http.Handler {
 	mux := http.NewServeMux()
 	// 协议与公开端点（不走 Web 鉴权）。
 	mux.HandleFunc("/v1/opamp", r.opampHandler)
-	mux.Handle("/mcp", r.mcpHandler)
+	mux.Handle("/mcp", MCPAuth(r.opts.MCPAuthToken, r.mcpHandler))
 	mux.HandleFunc("/healthz", r.handlers.Healthz)
 
 	// Web 管理面 REST：整体挂鉴权中间件（登录等免登路径在中间件内放行）。
@@ -82,7 +84,7 @@ func (r *Router) apiMux() *http.ServeMux {
 	mux.HandleFunc("/api/v1/auth/login", r.opts.Auth.HandleLogin)
 	mux.HandleFunc("/api/v1/auth/logout", r.opts.Auth.HandleLogout)
 	mux.HandleFunc("/api/v1/auth/me", r.opts.Auth.HandleMe)
-	mux.HandleFunc("/api/v1/system/info", SystemInfo(r.opts.Auth, r.opts.DemoMode))
+	mux.HandleFunc("/api/v1/system/info", SystemInfo(r.opts.Auth, r.opts.DemoMode, r.opts.MCPAuthToken != ""))
 
 	// 会话（GET=列表 / POST=创建）与会话详情。
 	mux.HandleFunc("/api/v1/sessions", h.HandleSessions)

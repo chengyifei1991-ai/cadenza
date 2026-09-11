@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **MCP 鉴权 token（1.1.0-a）**：新增 `MCP_AUTH_TOKEN` 配置——非空时 `/mcp` 要求
+  `Authorization: Bearer <token>`（常量时间比较，未认证返回 401 中文错误）；为空时保持 1.0 的
+  开箱即用行为并在启动日志告警。`/api/v1/system/info` 新增 `mcp_auth` 标记供前端设置页展示；
+  compose/.env.example/README 同步该变量。
+
+
 ## [1.0.1] - 2026-09-10
 
 ### 新增
