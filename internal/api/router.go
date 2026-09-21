@@ -148,6 +148,8 @@ func (r *Router) taskAction(w http.ResponseWriter, req *http.Request) {
 		r.handlers.ApproveTask(w, req, id)
 	case "reject":
 		r.handlers.RejectTask(w, req, id)
+	case "diff":
+		r.handlers.GetTaskDiff(w, req, id)
 	default:
 		writeError(w, http.StatusNotFound, "未知操作")
 	}

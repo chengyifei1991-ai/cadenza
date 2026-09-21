@@ -110,6 +110,16 @@ export const api = {
   getTask(id: string): Promise<Task> {
     return request<Task>(`/api/v1/tasks/${id}`);
   },
+  /** 任务级 diff（服务端 unified diff；支持分组目标，无需单实例基准）。 */
+  getTaskDiff(id: string): Promise<{
+    task_id: string;
+    base_yaml: string;
+    generated_yaml: string;
+    diff: string;
+    has_base: boolean;
+  }> {
+    return request(`/api/v1/tasks/${encodeURIComponent(id)}/diff`);
+  },
   approveTask(id: string): Promise<unknown> {
     return request(`/api/v1/tasks/${id}/approve`, { method: "POST", body: {} });
   },

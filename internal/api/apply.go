@@ -43,7 +43,8 @@ func (h *Handlers) ApplyTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "collector_instance_uid 与 yaml 均为必填")
 		return
 	}
-	if _, err := h.store.GetCollector(r.Context(), req.CollectorInstanceUID); err != nil {
+	target, err := h.store.GetCollector(r.Context(), req.CollectorInstanceUID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "目标 Collector 不存在")
 		return
 	}
@@ -59,13 +60,15 @@ func (h *Handlers) ApplyTask(w http.ResponseWriter, r *http.Request) {
 	}
 	approver := approverOf(r, "")
 	t := &store.Task{
-		ID:                ulid.New(),
-		Type:              store.TaskTypeApply,
-		Status:            store.TaskStatusAwaitingApproval,
-		RequireApproval:   h.deps.Config.RequireApproval,
-		Input:             input,
-		SessionID:         req.SessionID,
-		GeneratedYAML:     req.YAML,
+		ID:              ulid.New(),
+		Type:            store.TaskTypeApply,
+		Status:          store.TaskStatusAwaitingApproval,
+		RequireApproval: h.deps.Config.RequireApproval,
+		Input:           input,
+		SessionID:       req.SessionID,
+		GeneratedYAML:   req.YAML,
+		// 基准快照：任务创建时的目标生效配置，保证任务级 diff 跨时间可复现。
+		BaseYAML:          target.EffectiveConfig,
 		TargetInstanceUID: req.CollectorInstanceUID,
 		TargetGroupID:     req.CollectorInstanceUID,
 	}

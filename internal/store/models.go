@@ -156,6 +156,9 @@ type Task struct {
 	Input string `json:"input"`
 	// GeneratedYAML 是生成/待下发的配置内容。
 	GeneratedYAML string `json:"generated_yaml"`
+	// BaseYAML 是本次变更的**基准配置**快照（下发前目标当前生效配置的代表值），
+	// 供服务端生成任务级 diff（分组目标任务没有单一实例基准，故落库固化）。
+	BaseYAML string `json:"base_yaml,omitempty"`
 	// SessionID 是发起该任务的 AI 会话 ID（会话内创建的任务）；
 	// 为空表示非会话发起（如 REST/MCP 直调）。
 	SessionID string `json:"session_id,omitempty"`

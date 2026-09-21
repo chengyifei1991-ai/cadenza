@@ -117,6 +117,10 @@ func (s *sqlStore) initSchema() error {
 	if err := s.ensureColumn("tasks", "session_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	// 幂等迁移：tasks 新增 base_yaml（任务级 diff 基准快照，1.1.0-d）。
+	if err := s.ensureColumn("tasks", "base_yaml", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id)`); err != nil {
 		return err
 	}
@@ -378,10 +382,10 @@ func (s *sqlStore) CreateTask(ctx context.Context, t *Task) error {
 		return fmt.Errorf("marshal approvers: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, session_id, target_group_id,
+		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, base_yaml, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.BaseYAML,
 		t.SessionID, t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver, t.RejectReason,
 		t.ModelUsed, t.Error, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt))
 	return err
@@ -394,10 +398,10 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 	}
 	t.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(ctx, `
-		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, session_id=?, target_group_id=?,
+		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, base_yaml=?, session_id=?, target_group_id=?,
 			target_instance_uid=?, rollback_version_id=?, approvers=?, approver=?, reject_reason=?, model_used=?, error=?, updated_at=?
 		WHERE id = ?`,
-		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.SessionID,
+		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.BaseYAML, t.SessionID,
 		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver,
 		t.RejectReason, t.ModelUsed, t.Error, fmtTime(t.UpdatedAt), t.ID)
 	return err
@@ -405,7 +409,7 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 
 func (s *sqlStore) GetTask(ctx context.Context, id string) (*Task, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, type, status, require_approval, input, generated_yaml, session_id, target_group_id,
+		SELECT id, type, status, require_approval, input, generated_yaml, base_yaml, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
 		FROM tasks WHERE id = ?`, id)
 	return scanTask(row)
@@ -455,7 +459,7 @@ func (s *sqlStore) ListTasks(ctx context.Context, f TaskFilter, page, pageSize i
 	// 排序同样按秒截断 + id（ULID，时间单调）兜底：避免 RFC3339Nano 变长
 	// 小数秒导致同秒内顺序与真实时间不一致（'.' < 'Z'）。
 	query := `
-		SELECT id, type, status, require_approval, input, generated_yaml, session_id, target_group_id,
+		SELECT id, type, status, require_approval, input, generated_yaml, base_yaml, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
 		FROM tasks` + where + ` ORDER BY substr(created_at,1,19) DESC, id DESC`
 	if pageSize > 0 {
@@ -485,7 +489,7 @@ func scanTask(sc rowScanner) (*Task, error) {
 		reqApproval  int
 		created, upd string
 	)
-	if err := sc.Scan(&t.ID, &t.Type, &t.Status, &reqApproval, &t.Input, &t.GeneratedYAML, &t.SessionID,
+	if err := sc.Scan(&t.ID, &t.Type, &t.Status, &reqApproval, &t.Input, &t.GeneratedYAML, &t.BaseYAML, &t.SessionID,
 		&t.TargetGroupID, &t.TargetInstanceUID, &t.RollbackVersionID, &approvers, &t.Approver,
 		&t.RejectReason, &t.ModelUsed, &t.Error, &created, &upd); err != nil {
 		return nil, mapNoRows(err)

@@ -46,3 +46,28 @@ function splitLines(value: string): string[] {
   if (all.length > 0 && all[all.length - 1] === "") all.pop();
   return all;
 }
+
+/**
+ * 解析服务端 unified diff 文本（1.1.0-d）为统一渲染结构。
+ * 忽略 `--- a` / `+++ b` 文件头与 `@@` hunk 头；其余按前缀归类。
+ */
+export function parseUnified(unified: string): DiffResult {
+  const lines: DiffLine[] = [];
+  let added = 0;
+  let removed = 0;
+  for (const raw of (unified || "").split("\n")) {
+    if (raw === "" || raw.startsWith("--- ") || raw.startsWith("+++ ") || raw.startsWith("@@")) continue;
+    const prefix = raw[0];
+    const text = raw.slice(1);
+    if (prefix === "+") {
+      added += 1;
+      lines.push({ kind: "add", text });
+    } else if (prefix === "-") {
+      removed += 1;
+      lines.push({ kind: "remove", text });
+    } else if (prefix === " ") {
+      lines.push({ kind: "keep", text });
+    }
+  }
+  return { lines, added, removed, changed: added > 0 || removed > 0 };
+}

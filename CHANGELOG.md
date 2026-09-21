@@ -17,6 +17,12 @@
 - **前端单测接入 CI 门禁**：新增 typecheck + `vitest run` 步骤；修复 `AssistantPage.send()`
   未捕获拒绝（fire-and-forget 调用产生的 2 处 unhandled rejection，此前 `npm test` 退出码为 1）。
 
+- **任务级 diff 服务端化（1.1.0-d）**：新增 `internal/diff`（stdlib LCS 实现的 unified 行级
+  diff，无第三方依赖，大输入自动降级）；`Task.BaseYAML` 基准快照（generate/optimize 落库时取
+  目标分组代表实例的生效配置，REST apply 取目标当前生效配置，跨时间可复现）；
+  新增 `GET /api/v1/tasks/{id}/diff`（无生成配置 409、未知任务 404）与 MCP 工具 `get_task_diff`
+  （工具数 9 → 10，README 同步）；前端任务详情改为优先消费服务端 diff（分组目标也能看差异，
+  `DiffView` 支持预计算结果），旧的前端本地对比路径保留为回退。
 - **MCP 鉴权 token（1.1.0-a）**：新增 `MCP_AUTH_TOKEN` 配置——非空时 `/mcp` 要求
   `Authorization: Bearer <token>`（常量时间比较，未认证返回 401 中文错误）；为空时保持 1.0 的
   开箱即用行为并在启动日志告警。`/api/v1/system/info` 新增 `mcp_auth` 标记供前端设置页展示；

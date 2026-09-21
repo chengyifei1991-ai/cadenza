@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chengyifei1991-ai/cadenza/internal/config"
+	"github.com/chengyifei1991-ai/cadenza/internal/diff"
 	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/chengyifei1991-ai/cadenza/internal/task"
@@ -112,6 +113,9 @@ func NewTools(d *Deps) []tool.Tool {
 	pendingSchema := str("列出所有待审批任务")
 	pendingSchema.Required = nil
 
+	diffSchema := str("获取任务的配置差异（基准 vs 生成，服务端 unified diff）", "task_id")
+	addProp(diffSchema, "task_id", "string", "任务 ID")
+
 	return []tool.Tool{
 		&simpleTool{decl: &tool.Declaration{Name: "list_collectors", Description: "查询 Collector 集群状态", InputSchema: listSchema}, handle: d.handleListCollectors},
 		&simpleTool{decl: &tool.Declaration{Name: "get_collector_config", Description: "获取 Collector 当前生效配置", InputSchema: getCfgSchema}, handle: d.handleGetConfig},
@@ -122,7 +126,51 @@ func NewTools(d *Deps) []tool.Tool {
 		&simpleTool{decl: &tool.Declaration{Name: "approve_task", Description: "审批通过并下发", InputSchema: approveSchema}, handle: d.handleApprove},
 		&simpleTool{decl: &tool.Declaration{Name: "reject_task", Description: "拒绝任务", InputSchema: rejectSchema}, handle: d.handleReject},
 		&simpleTool{decl: &tool.Declaration{Name: "list_pending_tasks", Description: "列出待审批任务", InputSchema: pendingSchema}, handle: d.handleListPending},
+		&simpleTool{decl: &tool.Declaration{Name: "get_task_diff", Description: "获取任务的配置差异（基准 vs 生成）", InputSchema: diffSchema}, handle: d.handleGetTaskDiff},
 	}
+}
+
+// baseConfigFor 取目标任务（分组或实例）的基准配置：分组取组内代表实例的当前生效配置，
+// 实例则取其自身；无代表实例返回空串（diff 时提示"无基准"）。
+func (d *Deps) baseConfigFor(ctx context.Context, target string) string {
+	if target == "" {
+		return ""
+	}
+	if c, err := d.Store.GetCollector(ctx, target); err == nil {
+		return c.EffectiveConfig
+	}
+	collectors, _, err := d.Store.ListCollectors(ctx, 0, 0)
+	if err != nil {
+		return ""
+	}
+	for _, c := range collectors {
+		if c.GroupID == target {
+			return c.EffectiveConfig
+		}
+	}
+	return ""
+}
+
+// handleGetTaskDiff 实现 get_task_diff：返回任务的基准/生成配置与服务端 unified diff。
+func (d *Deps) handleGetTaskDiff(ctx context.Context, args map[string]any) (any, error) {
+	taskID := getString(args, "task_id")
+	if taskID == "" {
+		return nil, fmt.Errorf("task_id 不能为空")
+	}
+	t, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("任务不存在: %w", err)
+	}
+	if t.GeneratedYAML == "" {
+		return nil, fmt.Errorf("任务 %s 没有可比较的生成配置", taskID)
+	}
+	return map[string]any{
+		"task_id":        t.ID,
+		"base_yaml":      t.BaseYAML,
+		"generated_yaml": t.GeneratedYAML,
+		"diff":           diff.Unified(t.BaseYAML, t.GeneratedYAML),
+		"has_base":       t.BaseYAML != "",
+	}, nil
 }
 
 func getString(args map[string]any, key string) string {
@@ -212,6 +260,7 @@ func (d *Deps) handleGenerateConfig(ctx context.Context, args map[string]any) (a
 		Input:           desc,
 		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   target,
+		BaseYAML:        d.baseConfigFor(ctx, target),
 	}
 	if err := d.Tasks.Create(ctx, t); err != nil {
 		return nil, fmt.Errorf("创建任务失败: %w", err)
@@ -354,6 +403,7 @@ func (d *Deps) handleOptimizeConfig(ctx context.Context, args map[string]any) (a
 		Input:           desc,
 		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   uid,
+		BaseYAML:        c.EffectiveConfig,
 	}
 	if err := d.Tasks.Create(ctx, t); err != nil {
 		return nil, fmt.Errorf("创建任务失败: %w", err)

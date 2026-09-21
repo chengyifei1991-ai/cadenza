@@ -426,6 +426,41 @@ check_code "消息 limit=0 越界 → 400" 400
 req GET "/api/v1/sessions/no-such-session/messages" --cookie "$CJ"
 check_code "未知会话消息 → 404" 404
 
+section "18. 任务级 diff 服务端化（1.1.0-d）"
+# 第 16 节的 apply 任务：目标 demo-gateway-1 有生效配置 → 应带基准快照（内容相同则 diff 为空）。
+req GET "/api/v1/tasks/$SESS_TASK_ID/diff" --cookie "$CJ"
+check_code "apply 任务 diff → 200" 200
+check_json_eq "['has_base']" "True" "apply 任务含基准快照"
+check_contains "diff 端点返回 generated_yaml" '"generated_yaml"'
+
+# 另造一个与基准确有差异的任务：在基准配置上新增 processors.batch。
+DIFF_YAML=$(python3 - "$VALID_YAML" <<'PY'
+import sys
+print(sys.argv[1] + "processors:\n  batch:\n    timeout: 5s\n")
+PY
+)
+DIFF_PAYLOAD=$(python3 - "$DIFF_YAML" <<'PY'
+import json, sys
+print(json.dumps({"collector_instance_uid": "demo-gateway-1", "yaml": sys.argv[1], "note": "e2e diff 用例"}))
+PY
+)
+req POST /api/v1/tasks/apply --cookie "$CJ" --data "$DIFF_PAYLOAD"
+check_code "提交有差异的 apply → 201" 201
+DIFF_TASK_ID=$(jget "['id']")
+req GET "/api/v1/tasks/$DIFF_TASK_ID/diff" --cookie "$CJ"
+check_code "有差异任务 diff → 200" 200
+check_contains "diff 为 unified 格式（文件头）" "+++ b"
+check_contains "diff 含变更块" "@@ -"
+check_contains "diff 含新增行" "+    timeout: 5s"
+DIFF_LEN=$(python3 -c "import json;print(len(json.load(open('$BODY'))['diff']))")
+if [ "${DIFF_LEN:-0}" -gt 0 ]; then pass; else fail "diff 内容为空（该任务与基准应有差异）"; fi
+
+# 回滚任务无生成配置 → 409（语义：无可比较内容）；未知任务 → 404。
+req GET "/api/v1/tasks/$RB_ID/diff" --cookie "$CJ"
+check_code "无生成配置的任务 diff → 409" 409
+req GET "/api/v1/tasks/no-such-task/diff" --cookie "$CJ"
+check_code "未知任务 diff → 404" 404
+
 section "14. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'

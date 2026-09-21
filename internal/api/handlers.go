@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chengyifei1991-ai/cadenza/internal/agent"
+	"github.com/chengyifei1991-ai/cadenza/internal/diff"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/chengyifei1991-ai/cadenza/internal/task"
 	"github.com/chengyifei1991-ai/cadenza/internal/validator"
@@ -234,6 +235,31 @@ func parseTimeParam(v string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return t.UTC(), nil
+}
+
+// GetTaskDiff 处理 GET /api/v1/tasks/{id}/diff：
+// 返回任务基准配置、生成配置与服务端 unified diff（分组任务无实例基准时提示 has_base=false）。
+func (h *Handlers) GetTaskDiff(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	t, err := h.store.GetTask(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	if t.GeneratedYAML == "" {
+		writeError(w, http.StatusConflict, "任务没有可比较的生成配置")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":        t.ID,
+		"base_yaml":      t.BaseYAML,
+		"generated_yaml": t.GeneratedYAML,
+		"diff":           diff.Unified(t.BaseYAML, t.GeneratedYAML),
+		"has_base":       t.BaseYAML != "",
+	})
 }
 
 // GetTask 处理 GET /api/v1/tasks/{id}。

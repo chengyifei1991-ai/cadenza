@@ -18,7 +18,7 @@
 | 对话生成配置 | 自然语言 → LLM 生成 YAML → 校验 → 审批 → 下发 |
 | 自动优化配置 | 基于 Collector 上报状态分析并提议优化方案 |
 | 版本升级 | `PackagesAvailable` 协议能力（Beta），任务化审批 |
-| MCP Server | `/mcp`（streamable HTTP），9 个工具，外部 LLM/IDE 可直接调用 |
+| MCP Server | `/mcp`（streamable HTTP），10 个工具，外部 LLM/IDE 可直接调用 |
 | REST API | `/api/v1/*`，Web 前端使用 |
 | 审批闭环 | 会话 → 任务 → 审批 → 下发，全部审计留痕 |
 | LLM 稳定性 | 超时 → 指数退避重试 → failover 多模型切换 → 熔断 → 缓存 → 故障隔离 |
@@ -138,6 +138,7 @@ WebSocket 连接支持配置主动即时推送；HTTP 拉取模式下，待下�
 | `upgrade_collector` | 创建版本升级任务（Beta） |
 | `approve_task` / `reject_task` | 审批 / 拒绝 |
 | `list_pending_tasks` | 列出待审批任务 |
+| `get_task_diff` | 获取任务的配置差异（基准 vs 生成，服务端 unified diff） |
 
 MCP 端点：`http://<host>:8080/mcp`（streamable HTTP，`Accept: application/json, text/event-stream`）。
 

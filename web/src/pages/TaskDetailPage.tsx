@@ -26,6 +26,7 @@ import type { TaskStatus, TaskType } from "../api/types";
 import { TASK_STATUS, TASK_TYPE_LABEL } from "../lib/status";
 import { fmtDateTime } from "../lib/time";
 import DiffView from "../components/DiffView";
+import { parseUnified } from "../lib/diff";
 
 const TERMINAL: TaskStatus[] = ["done", "rejected", "failed"];
 
@@ -82,6 +83,19 @@ export default function TaskDetailPage() {
     },
   });
 
+  // 服务端 diff（1.1.0-d）优先：分组目标任务也有基准，且 REST/MCP 与 UI 同一口径。
+  const serverDiff = useQuery({
+    queryKey: ["task-diff", id],
+    queryFn: () => api.getTaskDiff(id),
+    enabled: Boolean(id) && Boolean(t?.generated_yaml),
+    retry: false,
+  });
+  const parsedServerDiff = useMemo(
+    () => (serverDiff.data?.diff ? parseUnified(serverDiff.data.diff) : null),
+    [serverDiff.data],
+  );
+
+  // 回退：旧路径——目标为单实例时取其实时生效配置在前端本地比对。
   const diff = useMemo(() => {
     if (!t) return null;
     const next = t.generated_yaml;
@@ -158,7 +172,18 @@ export default function TaskDetailPage() {
         </Typography.Paragraph>
       </Card>
 
-      {diff ? (
+      {parsedServerDiff ? (
+        <Card
+          title={
+            serverDiff.data?.has_base
+              ? "变更内容（服务端 diff：基准 vs 生成）"
+              : "变更内容（无基准，以下为生成配置的行视图）"
+          }
+          style={{ marginBottom: 16 }}
+        >
+          <DiffView result={parsedServerDiff} maxLines={300} height={380} />
+        </Card>
+      ) : diff ? (
         <Card title="变更内容（与目标当前生效配置对比）" style={{ marginBottom: 16 }}>
           <DiffView oldText={diff.oldText} newText={diff.newText} maxLines={300} height={380} />
         </Card>

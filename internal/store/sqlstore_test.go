@@ -610,3 +610,74 @@ func TestListMessagesPaging(t *testing.T) {
 		t.Errorf("空会话 = %v(total=%d,err=%v), want 空", contents(items), total, err)
 	}
 }
+
+// TestTaskBaseYAML 验证任务基准配置快照（1.1.0-d）的读写与旧库迁移。
+func TestTaskBaseYAML(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	st := newTestStore(t)
+	sqlSt := st.(*sqlStore)
+
+	// 旧库形态：无 base_yaml 列 → initSchema 迁移补齐，旧行可读（base_yaml 为空）。
+	if _, err := sqlSt.db.Exec(`DROP TABLE tasks`); err != nil {
+		t.Fatalf("drop tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`CREATE TABLE tasks (
+		id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,
+		require_approval INTEGER NOT NULL DEFAULT 1, input TEXT NOT NULL DEFAULT '',
+		generated_yaml TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
+		target_group_id TEXT NOT NULL DEFAULT '', approvers TEXT NOT NULL DEFAULT '[]',
+		approver TEXT NOT NULL DEFAULT '', reject_reason TEXT NOT NULL DEFAULT '',
+		model_used TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create legacy tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`INSERT INTO tasks (id, type, status, generated_yaml, created_at, updated_at)
+		VALUES ('legacy-base','generate','pending','receivers: {}', ?, ?)`, fmtTime(now), fmtTime(now)); err != nil {
+		t.Fatalf("insert legacy: %v", err)
+	}
+	if err := sqlSt.initSchema(); err != nil {
+		t.Fatalf("initSchema（迁移）失败: %v", err)
+	}
+	legacy, err := st.GetTask(ctx, "legacy-base")
+	if err != nil {
+		t.Fatalf("GetTask(legacy): %v", err)
+	}
+	if legacy.BaseYAML != "" {
+		t.Errorf("旧任务 base_yaml 应为空，实际 %q", legacy.BaseYAML)
+	}
+
+	// 新任务：base_yaml 落库并可回读、更新后保留。
+	tk := &Task{
+		ID: "with-base", Type: TaskTypeGenerate, Status: TaskStatusAwaitingApproval,
+		GeneratedYAML: "b: 2\n", BaseYAML: "a: 1\n", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateTask(ctx, tk); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := st.GetTask(ctx, "with-base")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.BaseYAML != "a: 1\n" {
+		t.Errorf("base_yaml 回读 = %q, want %q", got.BaseYAML, "a: 1\n")
+	}
+	got.Status = TaskStatusDone
+	if err := st.UpdateTask(ctx, got); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	again, _ := st.GetTask(ctx, "with-base")
+	if again.BaseYAML != "a: 1\n" {
+		t.Errorf("UpdateTask 后 base_yaml = %q, want %q", again.BaseYAML, "a: 1\n")
+	}
+	// 列表同样带出 base_yaml。
+	items, _, err := st.ListTasks(ctx, TaskFilter{}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	for _, it := range items {
+		if it.ID == "with-base" && it.BaseYAML == "" {
+			t.Errorf("ListTasks 未返回 base_yaml")
+		}
+	}
+}
