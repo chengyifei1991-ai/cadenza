@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-29
+
+> 主题：**可用性闭环 + 可选 GitOps**。默认行为与 1.0.x 一致（`CONFIG_SOURCE=builtin`），
+> 新机制全部为可选叠加，零回归。
+
 ### 修复
 
 - **页面显示 Collector"未知"（真实环境暴露）**：OpAMP 客户端只在健康**变化**时携带 health，
@@ -28,6 +33,10 @@
   审计 `since` 保持"审计行 id 游标"语义，时间区间请用新增的 `from`/`to`。
 - **基准来源标注（1.1.0-d）**：任务级 diff 的 `base_yaml` 优先取 Agent 权威上报值并新增
   `base_source`（`reported`/`store`/空）字段，避免把服务端下发意图值误认作"正在运行的配置"。
+- **AI 模型 key 的归属明确为使用方**：模型凭据一律由使用方在启动时以环境变量
+  （`LLM_API_KEY` / `LLM_BACKUP_API_KEY`）提供，程序不内置、不代管任何 key；缺失时**拒绝启动**
+  （不再有静默可用的兜底值）。`docker-compose.ga.yml` 去掉 `LLM_API_KEY:-not-used` 占位兜底，
+  改为缺变量即 compose 报错，避免"服务起来了但 AI 全是失败调用"的误判。
 
 
 ### 新增
@@ -51,7 +60,7 @@
   - **真机门禁（G-d）**：`tests/gitops-real-gate.sh`——真实 otelcol-contrib 收到 git 来源配置并
     **真实切换端口**（14361→14362），再按历史 commit 回退并真实切回（12/12）。
   - 门禁：`internal/gitsource` 单测（真实临时仓库、安全校验、按 ref 读取）、
-    配置 fail-closed 单测、API/GitOps 单测、`tests/gitops-e2e.sh`（14 项，已接入 CI e2e job）。
+    配置 fail-closed 单测、API/GitOps 单测、`tests/gitops-e2e.sh`（18 项，已接入 CI e2e job）。
 
 
 - **任务 ↔ 会话硬绑定（1.1.0-b）**：`Task` 新增 `session_id`（旧库幂等迁移 + 索引）——

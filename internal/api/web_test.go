@@ -278,7 +278,7 @@ func TestSystemInfo(t *testing.T) {
 		t.Fatalf("system/info status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`"auth_mode":"simple"`, `"demo_mode":true`, `"version":"1.0.1"`, `"mcp_auth":false`} {
+	for _, want := range []string{`"auth_mode":"simple"`, `"demo_mode":true`, `"version":"1.1.0"`, `"mcp_auth":false`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("system/info 缺少 %s: %s", want, body)
 		}

@@ -15,6 +15,7 @@
 |---|---|
 | OpAMP Server | `/v1/opamp`，HTTP + WebSocket 双传输，接入认证、状态接收、配置主动下发 |
 | 配置校验 | 两级：yaml.v3 结构校验 + `otelcol-contrib validate`（锁定 **v0.156.0**） |
+| 配置版本来源 | 默认**内置**版本快照 + 回滚；可选 **GitOps 模式**（`CONFIG_SOURCE=git`：使用方本地 git 仓库为版本权威，Cadenza **只读**读取、按 commit 下发/回退并留溯源，不提交不改动仓库） |
 | 对话生成配置 | 自然语言 → LLM 生成 YAML → 校验 → 审批 → 下发 |
 | 自动优化配置 | 基于 Collector 上报状态分析并提议优化方案 |
 | 版本升级 | `PackagesAvailable` 协议能力（Beta），任务化审批 |
@@ -60,8 +61,8 @@ go build -o bin/cadenza ./cmd/server
 # 生成管理员口令哈希（Web 登录用，安全默认值要求设置）
 export WEB_ADMIN_PASSWORD_HASH=$(htpasswd -bnBC 10 "" '你的密码' | tr -d ':\n')
 
-# 运行（最小配置：SQLite + 任意 LLM key + Web 登录）
-export LLM_API_KEY=sk-xxx
+# 运行（最小配置：SQLite + 使用方自备 LLM key + Web 登录）
+export LLM_API_KEY=sk-xxx              # 由使用方自备：启动时必须提供，缺失拒绝启动
 export DB_DRIVER=sqlite
 export DB_SQLITE_PATH=./data/opamp.db   # 首次运行请先 mkdir -p data
 export HTTP_ADDR=:8080
@@ -102,7 +103,8 @@ export DEMO_MODE=true                   # 可选：空库注入演示数据（�
 | `GIT_CONFIG_PATHSPEC` | 空 | GitOps 模式必填：仓库内配置路径模板，支持 `{uid}` / `%s` 占位（如 `collectors/{uid}.yaml`） |
 | `GIT_REF` | `HEAD` | GitOps 默认读取的 ref（分支/tag/commit） |
 | `OTELCOL_BIN` / `STRICT_VALIDATE` | `/usr/local/bin/otelcol-contrib` / `false` | otelcol-contrib v0.156.0 深度校验 |
-| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | DeepSeek | 主模型（OpenAI 兼容） |
+| `LLM_API_KEY` | **必填，无默认** | **使用方自备**：启动时以环境变量提供；程序不内置任何 key，缺失（且未配 `LLM_BACKUP_API_KEY`）**拒绝启动** |
+| `LLM_BASE_URL` / `LLM_MODEL` | `https://api.deepseek.com` / `deepseek-chat` | 主模型（任意 OpenAI 兼容接口：DeepSeek / Ollama / vLLM 等） |
 | `LLM_BACKUP_*` | 空 | 备用模型（failover 第二候选） |
 | `LLM_LOCAL_*` | 空 | 本地兜底（第三候选，如 Ollama） |
 | `LLM_TIMEOUT` / `LLM_RETRY` / `LLM_CIRCUIT_*` / `LLM_CACHE_TTL` | 60s / 3 / 5 / 30s / 10m | LLM 稳定性参数 |
