@@ -82,3 +82,15 @@ COLLECTOR_BIN=/path/to/otelcol-contrib ./tests/real-collector-gate.sh
 配套 `tests/supervisor-fixture`（opamp-go client 实现的最小 supervisor）负责把远端配置落到文件、
 重启 collector 子进程并回报生效状态。脚本断言：注册上报 → 下发确认（error 为空）→ 端口真实迁移
 → 子进程重启 → 回滚切回 → 审计留痕。运行日志在 `.build/gate-run/`。
+
+## GitOps 可选模式门禁
+
+配置版本权威可外放到 git（`CONFIG_SOURCE=git`，默认 `builtin` 行为不变）：
+
+```bash
+./tests/gitops-e2e.sh        # 纯 API：fail-closed、只读端点、按 commit 回退、内置零回归（已接入 CI）
+./tests/gitops-real-gate.sh  # 真机：真实 otelcol-contrib 收到 git 来源配置并真实生效 + 按 commit 回退
+```
+
+`gitops-real-gate.sh` 依赖 `otelcol-contrib`（缺失自动 SKIP），用 `tests/supervisor-fixture` 托管真实
+collector；日志在 `.build/gitops-real/`。

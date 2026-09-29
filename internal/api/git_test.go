@@ -252,3 +252,91 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestRollbackFromGit 验证 GitOps 模式按 commit 回退：
+// 任务内容取自该 commit、带 git 溯源；审批后走同一生效确认/快照/审计口径。
+func TestRollbackFromGit(t *testing.T) {
+	h, firstSHA := gitHandlers(t)
+	ctx := context.Background()
+	const uid = "demo-gateway-1"
+	if err := h.store.UpsertCollector(ctx, &store.Collector{
+		InstanceUID: uid, Hostname: "n1", Version: "0.156.0",
+		LastSeenAt: time.Now().UTC(), Status: store.CollectorStatusHealthy,
+		EffectiveConfig: sampleYAML,
+	}); err != nil {
+		t.Fatalf("UpsertCollector: %v", err)
+	}
+
+	// 按历史 commit 回退（内容应为该 commit 的版本，而非 HEAD）。
+	rec := doJSON(t, http.HandlerFunc(h.RollbackTask), http.MethodPost, "/api/v1/tasks/rollback",
+		map[string]string{"collector_instance_uid": uid, "git_commit": firstSHA})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("rollback code = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var task store.Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+		t.Fatalf("解析任务失败: %v", err)
+	}
+	if task.Type != store.TaskTypeRollback || task.GitCommit != firstSHA {
+		t.Errorf("回退任务类型/git_commit 不符: type=%s commit=%q", task.Type, task.GitCommit)
+	}
+	if task.RollbackVersionID != 0 {
+		t.Errorf("GitOps 回退不应依赖内置版本 id，实际 %d", task.RollbackVersionID)
+	}
+	if task.GitPath != "collectors/demo-gateway-1.yaml" || !strings.Contains(task.GeneratedYAML, "otlp") {
+		t.Errorf("回退内容/路径不符: path=%q yaml=%q", task.GitPath, task.GeneratedYAML[:min(40, len(task.GeneratedYAML))])
+	}
+
+	// 审批 → 走 dispatchRollbackContent（离线 collector 排队但不报错）→ done + 版本快照 + git 审计。
+	result, err := h.deps.DispatchApprove(ctx, task.ID, "admin")
+	if err != nil {
+		t.Fatalf("DispatchApprove: %v", err)
+	}
+	if m, ok := result.(map[string]any); ok {
+		if m["status"] != string(store.TaskStatusDone) {
+			t.Errorf("审批后状态 = %v, want done", m["status"])
+		}
+	}
+	done, err := h.store.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if done.Status != store.TaskStatusDone {
+		t.Errorf("任务状态 = %s, want done", done.Status)
+	}
+	versions, _, err := h.store.ListConfigVersions(ctx, uid, 0, 0)
+	if err != nil {
+		t.Fatalf("ListConfigVersions: %v", err)
+	}
+	if len(versions) != 1 || versions[0].YAML != task.GeneratedYAML {
+		t.Errorf("应写入一条内置下发记录（快照）：%+v", versions)
+	}
+	logs, _, _ := h.store.ListAudit(ctx, store.AuditFilter{Action: store.AuditActionRollback}, 0, 0)
+	foundTrace := false
+	for _, l := range logs {
+		if strings.Contains(l.Detail, firstSHA) {
+			foundTrace = true
+		}
+	}
+	if !foundTrace {
+		t.Errorf("回退审计应带 git commit 溯源: %+v", logs)
+	}
+
+	// 参数校验：未知 commit → 400；内置模式传 git_commit → 409；两者都缺 → 400。
+	rec = doJSON(t, http.HandlerFunc(h.RollbackTask), http.MethodPost, "/api/v1/tasks/rollback",
+		map[string]string{"collector_instance_uid": uid, "git_commit": "no-such-commit"})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("未知 commit 应 400，实际 %d", rec.Code)
+	}
+	plain := newTestHandlers(t)
+	rec = doJSON(t, http.HandlerFunc(plain.RollbackTask), http.MethodPost, "/api/v1/tasks/rollback",
+		map[string]string{"collector_instance_uid": uid, "git_commit": "HEAD"})
+	if rec.Code != http.StatusConflict {
+		t.Errorf("内置模式传 git_commit 应 409，实际 %d", rec.Code)
+	}
+	rec = doJSON(t, http.HandlerFunc(h.RollbackTask), http.MethodPost, "/api/v1/tasks/rollback",
+		map[string]string{"collector_instance_uid": uid})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("缺 version_id/git 参数应 400，实际 %d", rec.Code)
+	}
+}

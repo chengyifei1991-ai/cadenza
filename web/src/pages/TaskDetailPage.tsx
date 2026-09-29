@@ -156,6 +156,21 @@ export default function TaskDetailPage() {
           {t.rollback_version_id ? (
             <Descriptions.Item label="回滚目标">版本 #{t.rollback_version_id}</Descriptions.Item>
           ) : null}
+          {t.git_commit && (
+            <Descriptions.Item label="Git 溯源">
+              <Typography.Text code>{t.git_commit.slice(0, 8)}</Typography.Text>
+              {t.git_path && (
+                <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                  {t.git_path}
+                </Typography.Text>
+              )}
+              {t.git_ref && t.git_ref !== t.git_commit && (
+                <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                  ref: {t.git_ref}
+                </Typography.Text>
+              )}
+            </Descriptions.Item>
+          )}
           {t.session_id && (
             <Descriptions.Item label="所属会话">
               <Link to={`/assistant?session=${encodeURIComponent(t.session_id)}`}>

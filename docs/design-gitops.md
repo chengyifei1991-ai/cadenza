@@ -1,6 +1,11 @@
 # GitOps 可选模式设计（配置版本由 git 托管）
 
-> 状态：**待评审**（评审通过后编码）｜ 日期：2026-09-29
+> 状态：**已交付**（G-a ~ G-d 全部落地并通过门禁）｜ 日期：2026-09-29
+>
+> 交付摘要：`internal/gitsource` 只读封装 + `CONFIG_SOURCE=git` fail-closed + `git/status|commits|file`
+> + apply/rollback 的 git 溯源（tasks 三列 + 审计） + MCP `get_git_config` + 前端「Git 历史」抽屉
+> （按提交下发/回退/查看） + 任务详情 git 溯源展示；
+> 门禁：单测全绿、`tests/gitops-e2e.sh` 18/18（已入 CI）、`tests/gitops-real-gate.sh` 12/12（真机）。
 > 关联：[design-1.1.0.md](./design-1.1.0.md)、[review-1.1.0-final.md](./review-1.1.0-final.md)、[product-plan.md](./product-plan.md)
 > 背景：用户提出"版本回退与记录不必都做进软件，应交给 git；软件只记录回退/升级这类动作数据"。
 > 决策：**不删除现有内置能力**，而是新增 `CONFIG_SOURCE=git` 这一**可选模式**（默认仍是内置模式，行为与 1.0/1.1 完全一致）。

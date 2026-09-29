@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/chengyifei1991-ai/cadenza/internal/validator"
@@ -39,6 +40,23 @@ type registryView interface {
 	ReportedEffective(instanceUID string) (string, bool)
 }
 
+// registryOrNil 把可能为 typed-nil 的 Registry 显式转为接口（typed nil 传入接口后
+// `r != nil` 为真，会在调用方法时空指针崩溃——这里统一收敛）。
+func (d *Deps) registryOrNil() registryView {
+	if d.Registry == nil {
+		return nil
+	}
+	return d.Registry
+}
+
+// pusherOrNil 同上：OpAMP 服务端缺失时返回 nil，由 pushAndConfirm 判定为致命错误。
+func (d *Deps) pusherOrNil() configPusher {
+	if d.OpAMP == nil {
+		return nil
+	}
+	return d.OpAMP
+}
+
 // pushAndConfirm 对单个实例执行"下发 → 等待生效回报 →（未确认且 Agent 支持时）
 // 补发重启命令 → 再等待"。
 //
@@ -53,6 +71,9 @@ type registryView interface {
 //   - 两段都未确认：返回 confirmed=false，调用方记录告警（不下发失败语义）。
 func pushAndConfirm(ctx context.Context, p configPusher, r registryView,
 	instanceUID, yamlContent string, timeout time.Duration) (bool, error) {
+	if p == nil {
+		return false, errors.New("OpAMP 服务端未初始化，无法下发")
+	}
 	online := r != nil && r.Online(instanceUID)
 	if err := p.PushConfig(ctx, instanceUID, yamlContent); err != nil {
 		return false, err

@@ -163,6 +163,38 @@ CODE=$(get "/api/v1/git/commits?instance_uid=${UID_REST}&limit=999")
 CODE=$(get "/api/v1/git/commits")
 [ "$CODE" = "400" ] && ok "缺 path/instance_uid → 400" || bad "缺参数应 400（实际 $CODE）"
 
+echo "== 用例 4b：按 git commit 回退（G-c） =="
+CODE=$(curl -s -m 5 -o /tmp/gitops-body -w '%{http_code}' -X POST "$BASE/api/v1/tasks/rollback" \
+  -H 'Content-Type: application/json' \
+  -d "{\"collector_instance_uid\":\"${UID_REST}\",\"git_commit\":\"${FIRST_SHA}\"}")
+if [ "$CODE" = "201" ] && [ "$(jget "['git_commit']")" = "$FIRST_SHA" ] && [ "$(jget "['type']")" = "rollback" ]; then
+  ok "按 commit 回退创建任务（type=rollback, git_commit=${FIRST_SHA:0:8}）"
+else
+  bad "git 回退创建任务不符（code=$CODE body=$(head -c 200 /tmp/gitops-body)）"
+fi
+RB_TASK=$(jget "['id']")
+RB_YAML_OK=$(python3 -c "
+import json
+d=json.load(open('/tmp/gitops-body'))
+print('yes' if '14351' in d.get('generated_yaml','') else 'no')")
+if [ "$RB_YAML_OK" = "yes" ]; then
+  ok "回退内容取自该 commit（含 14351，而非 HEAD 的 14352）"
+else
+  bad "回退内容应取自指定 commit"
+fi
+
+CODE=$(curl -s -m 30 -o /tmp/gitops-body -w '%{http_code}' -X POST "$BASE/api/v1/tasks/${RB_TASK}/approve" \
+  -H 'Content-Type: application/json' -d '{}')
+if [ "$CODE" = "200" ] && grep -q '"status":"done"' /tmp/gitops-body; then
+  ok "回退任务审批后 done（走同一生效确认/快照/审计口径）"
+else
+  bad "回退任务审批不符（code=$CODE body=$(head -c 200 /tmp/gitops-body)）"
+fi
+
+CODE=$(curl -s -m 5 -o /tmp/gitops-body -w '%{http_code}' -X POST "$BASE/api/v1/tasks/rollback" \
+  -H 'Content-Type: application/json' -d "{\"collector_instance_uid\":\"${UID_REST}\",\"git_commit\":\"no-such-commit\"}")
+[ "$CODE" = "400" ] && ok "未知 commit 回退 → 400" || bad "未知 commit 应 400（实际 $CODE）"
+
 echo "== 用例 5：内置模式零回归（同端口换内置实例前先停 GitOps 实例） =="
 kill "$SRV_PID" 2>/dev/null; sleep 1
 HTTP_ADDR="127.0.0.1:${PORT}" DB_DRIVER=sqlite DB_SQLITE_PATH="$WORKDIR/builtin.db" \
@@ -180,19 +212,23 @@ CODE=$(get "/api/v1/git/status")
 [ "$CODE" = "409" ] && ok "内置模式 git 端点 → 409（明确未启用）" || bad "内置模式 git/status 应 409（实际 $CODE）"
 
 python3 - "$BASE" <<'PY'
-import json, sys, urllib.request
+import json, sys, urllib.error, urllib.request
 base = sys.argv[1]
-req = urllib.request.Request(base + "/api/v1/tasks/apply", method="POST",
-                             data=json.dumps({"collector_instance_uid": "x", "git_ref": "HEAD"}).encode(),
-                             headers={"Content-Type": "application/json"})
-try:
-    urllib.request.urlopen(req, timeout=5)
-    print("  ✗ 内置模式传 git_ref 应 409")
-except urllib.error.HTTPError as e:
-    if e.code == 409:
-        print("  ✓ 内置模式传 git_ref → 409（明确未启用）")
-    else:
-        print(f"  ✗ 内置模式传 git_ref 期望 409，实际 {e.code}")
+for path, body, label in [
+    ("/api/v1/tasks/apply", {"collector_instance_uid": "x", "git_ref": "HEAD"}, "apply 带 git_ref"),
+    ("/api/v1/tasks/rollback", {"collector_instance_uid": "x", "git_commit": "HEAD"}, "rollback 带 git_commit"),
+]:
+    req = urllib.request.Request(base + path, method="POST",
+                                 data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        print(f"  ✗ 内置模式 {label} 应 409")
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            print(f"  ✓ 内置模式 {label} → 409（明确未启用）")
+        else:
+            print(f"  ✗ 内置模式 {label} 期望 409，实际 {e.code}")
 PY
 
 echo

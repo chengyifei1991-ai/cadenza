@@ -44,6 +44,12 @@
     `/api/v1/system/info` 增 `config_source` / `git_enabled`。
   - 溯源：`tasks` 增 `git_commit` / `git_path` / `git_ref`（幂等迁移），审计追加 `git 溯源 commit=… path=… ref=…`。
   - MCP 新增工具 `get_git_config`（10 → 11，README 同步）。
+  - **按 commit 回退（G-c）**：`POST /api/v1/tasks/rollback` 支持 `git_ref`/`git_commit`
+    （内容取自该提交的文件，不依赖内置版本 id）；与内置回退共用同一条下发/生效确认/快照/审计路径，
+    审计追加 git 溯源；前端 Collector 详情新增「Git 历史」抽屉（按提交下发/回退/查看内容），
+    任务详情展示 git 溯源（commit/path/ref）。
+  - **真机门禁（G-d）**：`tests/gitops-real-gate.sh`——真实 otelcol-contrib 收到 git 来源配置并
+    **真实切换端口**（14361→14362），再按历史 commit 回退并真实切回（12/12）。
   - 门禁：`internal/gitsource` 单测（真实临时仓库、安全校验、按 ref 读取）、
     配置 fail-closed 单测、API/GitOps 单测、`tests/gitops-e2e.sh`（14 项，已接入 CI e2e job）。
 

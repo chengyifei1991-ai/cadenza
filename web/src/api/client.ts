@@ -7,6 +7,8 @@ import type {
   ChatSession,
   Collector,
   ConfigVersion,
+  GitCommit,
+  GitStatus,
   Me,
   PageEnvelope,
   SessionSummary,
@@ -131,6 +133,45 @@ export const api = {
       method: "POST",
       body: { collector_instance_uid: collectorInstanceUid, version_id: versionId, session_id: sessionId },
     });
+  },
+  /** GitOps：按 git 提交回退（内容取自该 commit 的文件）。 */
+  rollbackToGitCommit(collectorInstanceUid: string, gitCommit: string): Promise<Task> {
+    return request<Task>("/api/v1/tasks/rollback", {
+      method: "POST",
+      body: { collector_instance_uid: collectorInstanceUid, git_commit: gitCommit },
+    });
+  },
+  /** GitOps：按 git 提交下发（服务端从仓库读取内容）。 */
+  applyFromGitRef(collectorInstanceUid: string, gitRef: string, note?: string): Promise<Task> {
+    return request<Task>("/api/v1/tasks/apply", {
+      method: "POST",
+      body: { collector_instance_uid: collectorInstanceUid, git_ref: gitRef, note },
+    });
+  },
+  /** GitOps：仓库只读状态。 */
+  getGitStatus(): Promise<GitStatus> {
+    return request<GitStatus>("/api/v1/git/status");
+  },
+  /** GitOps：某 Collector 配置文件的历史提交。 */
+  getGitCommits(instanceUid: string, limit = 20): Promise<{
+    items: GitCommit[];
+    total: number;
+    path: string;
+    ref: string;
+  }> {
+    const q = new URLSearchParams({ instance_uid: instanceUid, limit: String(limit) });
+    return request(`/api/v1/git/commits?${q}`);
+  },
+  /** GitOps：读取指定 ref 的配置内容。 */
+  getGitFile(instanceUid: string, ref?: string): Promise<{
+    ref: string;
+    git_commit: string;
+    path: string;
+    yaml: string;
+  }> {
+    const q = new URLSearchParams({ instance_uid: instanceUid });
+    if (ref) q.set("ref", ref);
+    return request(`/api/v1/git/file?${q}`);
   },
   applyTask(collectorInstanceUid: string, yaml: string, note?: string, sessionId?: string): Promise<Task> {
     return request<Task>("/api/v1/tasks/apply", {

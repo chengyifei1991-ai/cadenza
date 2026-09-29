@@ -475,11 +475,18 @@ func auditFilterFromQuery(r *http.Request) (store.AuditFilter, error) {
 // --- 回滚与版本历史 ---
 
 // RollbackRequest 是回滚任务创建请求体。
+//
+// 两种来源二选一：
+//   - 内置模式：`version_id`（内置版本快照 id）；
+//   - GitOps 模式：`git_ref`/`git_commit`（按 git 提交回退，内容来自该 commit 的文件）。
 type RollbackRequest struct {
 	CollectorInstanceUID string `json:"collector_instance_uid"`
 	VersionID            int64  `json:"version_id"`
 	// SessionID 是发起该回滚的 AI 会话（可选；会话内发起时回传）。
 	SessionID string `json:"session_id,omitempty"`
+	// GitRef / GitCommit 是 GitOps 模式下的回退目标（分支/tag/commit）。
+	GitRef    string `json:"git_ref,omitempty"`
+	GitCommit string `json:"git_commit,omitempty"`
 }
 
 // RollbackTask 处理 POST /api/v1/tasks/rollback：
@@ -494,8 +501,72 @@ func (h *Handlers) RollbackTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求体解析失败")
 		return
 	}
-	if req.CollectorInstanceUID == "" || req.VersionID <= 0 {
-		writeError(w, http.StatusBadRequest, "collector_instance_uid 与 version_id 均为必填")
+	if req.CollectorInstanceUID == "" {
+		writeError(w, http.StatusBadRequest, "collector_instance_uid 为必填")
+		return
+	}
+	// GitOps 模式：按 commit 回退——内容取自该提交的文件（版本权威在 git）。
+	if req.GitRef != "" || req.GitCommit != "" {
+		repo, ok := h.gitRepo()
+		if !ok {
+			writeError(w, http.StatusConflict, gitDisabledMsg)
+			return
+		}
+		ref := req.GitCommit
+		if ref == "" {
+			ref = req.GitRef
+		}
+		path, err := gitsource.ExpandPathspec(h.deps.Config.GitConfigPathspec, req.CollectorInstanceUID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		content, err := repo.ShowFile(r.Context(), ref, path)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sha, err := repo.Resolve(r.Context(), ref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		res := validator.Validate(content, h.deps.Config.OtelcolBin, h.deps.Config.StrictValidate)
+		if !res.Valid {
+			writeError(w, http.StatusBadRequest, "git 版本内容校验未通过: "+strings.Join(res.Errors, "; "))
+			return
+		}
+		t := &store.Task{
+			ID:                agent.NewULID(),
+			Type:              store.TaskTypeRollback,
+			Status:            store.TaskStatusAwaitingApproval,
+			RequireApproval:   true,
+			Input:             fmt.Sprintf("按 git 提交回退 %s 到 %s", req.CollectorInstanceUID, sha[:8]),
+			SessionID:         req.SessionID,
+			GeneratedYAML:     content,
+			TargetInstanceUID: req.CollectorInstanceUID,
+			RollbackVersionID: 0, // GitOps 回退不依赖内置版本 id
+			GitCommit:         sha,
+			GitPath:           path,
+			GitRef:            req.GitCommit,
+		}
+		if t.GitRef == "" {
+			t.GitRef = req.GitRef
+		}
+		if err := h.tasks.Create(r.Context(), t); err != nil {
+			writeError(w, http.StatusInternalServerError, "创建回滚任务失败")
+			return
+		}
+		_ = h.store.AppendAudit(r.Context(), &store.AuditLog{
+			Actor: approverOf(r, ""), Action: store.AuditActionRollback, Subject: t.ID,
+			Detail:    fmt.Sprintf("git 溯源 commit=%s path=%s ref=%s", sha, path, t.GitRef),
+			CreatedAt: time.Now().UTC(),
+		})
+		writeJSON(w, http.StatusCreated, t)
+		return
+	}
+	if req.VersionID <= 0 {
+		writeError(w, http.StatusBadRequest, "回滚需提供 version_id（内置模式）或 git_ref/git_commit（GitOps 模式）")
 		return
 	}
 	versions, _, err := h.store.ListConfigVersions(r.Context(), req.CollectorInstanceUID, 0, 0)

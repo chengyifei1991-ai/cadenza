@@ -611,7 +611,7 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 	}
 	var unconfirmed []string
 	for _, c := range collectors {
-		confirmed, perr := pushAndConfirm(ctx, d.OpAMP, d.Registry, c.InstanceUID, t.GeneratedYAML, defaultDispatchConfirmTimeout)
+		confirmed, perr := pushAndConfirm(ctx, d.pusherOrNil(), d.registryOrNil(), c.InstanceUID, t.GeneratedYAML, defaultDispatchConfirmTimeout)
 		if perr != nil {
 			d.log().Warn("approve 下发失败", "task_id", taskID, "instance_uid", c.InstanceUID, "error", perr)
 			continue
@@ -639,8 +639,15 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 
 // dispatchRollback 处理回滚任务审批后的版本下发。
 func (d *Deps) dispatchRollback(ctx context.Context, t *store.Task, approver string) (any, error) {
-	if t.TargetInstanceUID == "" || t.RollbackVersionID == 0 {
-		return nil, fmt.Errorf("回滚任务缺少目标 Collector 或版本信息")
+	if t.TargetInstanceUID == "" {
+		return nil, fmt.Errorf("回滚任务缺少目标 Collector")
+	}
+	// GitOps 回退：内容在创建任务时已从指定 commit 读出并固化在任务上（不依赖内置版本 id）。
+	if t.RollbackVersionID == 0 {
+		if t.GeneratedYAML == "" {
+			return nil, fmt.Errorf("回滚任务缺少可下发的配置内容")
+		}
+		return d.dispatchRollbackContent(ctx, t, t.GeneratedYAML, approver)
 	}
 	versions, _, err := d.Store.ListConfigVersions(ctx, t.TargetInstanceUID, 0, 0)
 	if err != nil {
@@ -660,26 +667,37 @@ func (d *Deps) dispatchRollback(ctx context.Context, t *store.Task, approver str
 	if target.CollectorInstanceUID != t.TargetInstanceUID {
 		return nil, fmt.Errorf("版本 %d 不属于该 Collector", t.RollbackVersionID)
 	}
-	confirmed, perr := pushAndConfirm(ctx, d.OpAMP, d.Registry, t.TargetInstanceUID, target.YAML, defaultDispatchConfirmTimeout)
+	return d.dispatchRollbackContent(ctx, t, target.YAML, approver)
+}
+
+// dispatchRollbackContent 下发回滚内容——内置版本回退与 GitOps 按 commit 回退共用同一路径，
+// 保证生效确认、版本快照与审计口径完全一致（GitOps 时审计带上 git 溯源）。
+func (d *Deps) dispatchRollbackContent(ctx context.Context, t *store.Task, yamlContent, approver string) (any, error) {
+	confirmed, perr := pushAndConfirm(ctx, d.pusherOrNil(), d.registryOrNil(), t.TargetInstanceUID, yamlContent, defaultDispatchConfirmTimeout)
 	if perr != nil {
 		if _, setErr := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusFailed); setErr != nil {
 			d.log().Warn("标记任务失败状态出错", "task_id", t.ID, "error", setErr)
 		}
 		return nil, fmt.Errorf("回滚下发失败: %w", perr)
 	}
-	d.recordConfigVersion(ctx, t.TargetInstanceUID, target.YAML)
+	// 仍写一条内置快照作为"下发记录"（D3 默认）：版本权威在 git，此处只是留痕。
+	d.recordConfigVersion(ctx, t.TargetInstanceUID, yamlContent)
 	if _, err := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusDone); err != nil {
 		d.markTaskFailed(ctx, t.ID, "完成回滚状态写入失败")
 		return nil, err
 	}
-	d.audit(ctx, approver, store.AuditActionRollback, t.ID, validator.Hash(target.YAML))
+	detail := validator.Hash(yamlContent)
+	if t.GitCommit != "" {
+		detail = fmt.Sprintf("git 溯源 commit=%s path=%s ref=%s; hash=%s", t.GitCommit, t.GitPath, t.GitRef, detail)
+	}
+	d.audit(ctx, approver, store.AuditActionRollback, t.ID, detail)
 	if !confirmed {
 		msg := "已回滚下发，但未收到生效确认（Agent 未回报新配置）"
 		d.setTaskError(ctx, t.ID, msg)
 		d.audit(ctx, approver, store.AuditActionRollback, t.ID, "生效确认超时")
 		d.log().Warn("回滚下发后未收到生效确认", "task_id", t.ID, "instance_uid", t.TargetInstanceUID)
 	}
-	return map[string]any{"task_id": t.ID, "status": string(store.TaskStatusDone), "message": "已回滚到历史版本"}, nil
+	return map[string]any{"task_id": t.ID, "status": string(store.TaskStatusDone), "message": "已回滚到指定版本"}, nil
 }
 
 // setTaskError 在任务上记录非致命告警信息（状态保持 done，error 字段展示原因）。
