@@ -140,6 +140,11 @@ WebSocket 连接支持配置主动即时推送；HTTP 拉取模式下，待下�
 | `list_pending_tasks` | 列出待审批任务 |
 | `get_task_diff` | 获取任务的配置差异（基准 vs 生成，服务端 unified diff） |
 
+> ⚠️ **配置原文含敏感值**：`/mcp`、`/api/v1/collectors/{uid}` 与 `/api/v1/tasks/{id}/diff`
+> 会返回配置（含基准快照）原文，其中可能包含 `Authorization` 头、Token 等敏感内容
+> （Agent 上报值经 otelcol 脱敏，但服务端提交的原文不脱敏）。生产部署请务必启用
+> `MCP_AUTH_TOKEN` 并限制管理面访问。
+
 MCP 端点：`http://<host>:8080/mcp`（streamable HTTP，`Accept: application/json, text/event-stream`）。
 
 ## 📡 REST API

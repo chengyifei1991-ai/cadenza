@@ -130,25 +130,48 @@ func NewTools(d *Deps) []tool.Tool {
 	}
 }
 
-// baseConfigFor 取目标任务（分组或实例）的基准配置：分组取组内代表实例的当前生效配置，
-// 实例则取其自身；无代表实例返回空串（diff 时提示"无基准"）。
-func (d *Deps) baseConfigFor(ctx context.Context, target string) string {
+// 基准来源标注（与 store.Task.BaseSource 一致）。
+const (
+	baseSourceReported = "reported" // Agent 权威上报的 effective config
+	baseSourceStore    = "store"    // 服务端记录的生效配置（可能是下发意图值）
+)
+
+// baseConfigFor 取目标任务（分组或实例）的基准配置与来源。
+//
+// 优先使用 Registry 中"仅由 Agent 上报"的 effective config（F-9：存储层字段被
+// 下发意图值覆盖过，不能代表正在运行的配置），回退到存储层记录并标注来源。
+func (d *Deps) baseConfigFor(ctx context.Context, target string) (string, string) {
 	if target == "" {
-		return ""
+		return "", ""
 	}
-	if c, err := d.Store.GetCollector(ctx, target); err == nil {
-		return c.EffectiveConfig
+	if yaml, src := d.baseForInstance(ctx, target); yaml != "" {
+		return yaml, src
 	}
 	collectors, _, err := d.Store.ListCollectors(ctx, 0, 0)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	for _, c := range collectors {
 		if c.GroupID == target {
-			return c.EffectiveConfig
+			if yaml, src := d.baseForInstance(ctx, c.InstanceUID); yaml != "" {
+				return yaml, src
+			}
 		}
 	}
-	return ""
+	return "", ""
+}
+
+// baseForInstance 取单个实例的基准配置与来源（上报值优先）。
+func (d *Deps) baseForInstance(ctx context.Context, uid string) (string, string) {
+	if d.Registry != nil {
+		if yaml, ok := d.Registry.ReportedEffective(uid); ok && yaml != "" {
+			return yaml, baseSourceReported
+		}
+	}
+	if c, err := d.Store.GetCollector(ctx, uid); err == nil && c.EffectiveConfig != "" {
+		return c.EffectiveConfig, baseSourceStore
+	}
+	return "", ""
 }
 
 // handleGetTaskDiff 实现 get_task_diff：返回任务的基准/生成配置与服务端 unified diff。
@@ -167,10 +190,19 @@ func (d *Deps) handleGetTaskDiff(ctx context.Context, args map[string]any) (any,
 	return map[string]any{
 		"task_id":        t.ID,
 		"base_yaml":      t.BaseYAML,
+		"base_source":    taskBaseSource(t),
 		"generated_yaml": t.GeneratedYAML,
 		"diff":           diff.Unified(t.BaseYAML, t.GeneratedYAML),
 		"has_base":       t.BaseYAML != "",
 	}, nil
+}
+
+// taskBaseSource 返回任务基准来源（无基准时空串）。
+func taskBaseSource(t *store.Task) string {
+	if t.BaseYAML == "" {
+		return ""
+	}
+	return t.BaseSource
 }
 
 func getString(args map[string]any, key string) string {
@@ -260,8 +292,9 @@ func (d *Deps) handleGenerateConfig(ctx context.Context, args map[string]any) (a
 		Input:           desc,
 		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   target,
-		BaseYAML:        d.baseConfigFor(ctx, target),
 	}
+	// 基准快照（F-9）：优先 Agent 上报值，回退服务端记录，并标注来源。
+	t.BaseYAML, t.BaseSource = d.baseConfigFor(ctx, target)
 	if err := d.Tasks.Create(ctx, t); err != nil {
 		return nil, fmt.Errorf("创建任务失败: %w", err)
 	}
@@ -389,6 +422,7 @@ func (d *Deps) handleOptimizeConfig(ctx context.Context, args map[string]any) (a
 	if err != nil {
 		return nil, fmt.Errorf("获取 Collector 失败: %w", err)
 	}
+	baseYAML, baseSource := d.baseForInstance(ctx, uid)
 	contextInfo := fmt.Sprintf("Collector 版本 %s，状态 %s。\n当前生效配置：\n%s",
 		c.Version, c.Status, c.EffectiveConfig)
 	desc := "请分析并优化上述配置"
@@ -403,8 +437,9 @@ func (d *Deps) handleOptimizeConfig(ctx context.Context, args map[string]any) (a
 		Input:           desc,
 		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   uid,
-		BaseYAML:        c.EffectiveConfig,
 	}
+	// 基准快照（F-9）：上报值优先。
+	t.BaseYAML, t.BaseSource = baseYAML, baseSource
 	if err := d.Tasks.Create(ctx, t); err != nil {
 		return nil, fmt.Errorf("创建任务失败: %w", err)
 	}

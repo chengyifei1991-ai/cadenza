@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 )
 
@@ -92,5 +93,72 @@ func TestTaskDiffRouterPath(t *testing.T) {
 	parts := splitPath("/api/v1/tasks/abc/diff")
 	if len(parts) != 5 || parts[3] != "abc" || parts[4] != "diff" {
 		t.Fatalf("splitPath 结果不符: %v", parts)
+	}
+}
+
+// TestApplyBaseProvenance 回归 F-9：apply 任务的基准来源优先取 Agent 上报值（reported），
+// 而非服务端存储字段（可能是下发意图值）。
+func TestApplyBaseProvenance(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	const uid = "prov-col-1"
+	reported := "receivers:\n  otlp:  # 来自 Agent 上报\n"
+	intent := "receivers:\n  otlp:  # 服务端意图值（上一次下发）\n"
+	if err := h.store.UpsertCollector(ctx, &store.Collector{
+		InstanceUID: uid, Hostname: "n1", Version: "0.156.0",
+		LastSeenAt: time.Now().UTC(), Status: store.CollectorStatusHealthy,
+		EffectiveConfig: intent,
+	}); err != nil {
+		t.Fatalf("UpsertCollector: %v", err)
+	}
+	// 测试装配的 Deps 默认无 Registry；显式挂一个用于验证"上报值优先"。
+	h.deps.Registry = opampserver.NewRegistry(h.store, time.Minute)
+	h.deps.Registry.SetReportedEffective(uid, reported)
+
+	rec := doJSON(t, http.HandlerFunc(h.ApplyTask), http.MethodPost, "/api/v1/tasks/apply",
+		map[string]string{"collector_instance_uid": uid, "yaml": sampleYAML})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("apply status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var created store.Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if created.BaseSource != "reported" {
+		t.Errorf("BaseSource = %q, want reported", created.BaseSource)
+	}
+	if created.BaseYAML != reported {
+		t.Errorf("BaseYAML 应取上报值，实际 %q", created.BaseYAML)
+	}
+	// diff 端点回显来源，便于前端/消费者判断基准可信度。
+	rec = doJSON(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.GetTaskDiff(w, r, created.ID)
+	}), http.MethodGet, "/api/v1/tasks/"+created.ID+"/diff", nil)
+	if !strings.Contains(rec.Body.String(), `"base_source":"reported"`) {
+		t.Errorf("diff 端点未回显 base_source=reported: %s", rec.Body.String())
+	}
+}
+
+// TestApplyBaseProvenanceFallback 验证无上报值时回退存储记录并标注 store。
+func TestApplyBaseProvenanceFallback(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	const uid = "prov-col-2"
+	intent := "receivers:\n  otlp:  # 仅服务端有值\n"
+	if err := h.store.UpsertCollector(ctx, &store.Collector{
+		InstanceUID: uid, Hostname: "n2", Version: "0.156.0",
+		LastSeenAt: time.Now().UTC(), Status: store.CollectorStatusHealthy,
+		EffectiveConfig: intent,
+	}); err != nil {
+		t.Fatalf("UpsertCollector: %v", err)
+	}
+	rec := doJSON(t, http.HandlerFunc(h.ApplyTask), http.MethodPost, "/api/v1/tasks/apply",
+		map[string]string{"collector_instance_uid": uid, "yaml": sampleYAML})
+	var created store.Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if created.BaseSource != "store" || created.BaseYAML != intent {
+		t.Errorf("回退来源/内容不符: source=%q base=%q", created.BaseSource, created.BaseYAML)
 	}
 }

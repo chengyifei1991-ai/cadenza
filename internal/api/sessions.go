@@ -117,6 +117,10 @@ func (h *Handlers) ListSessionMessages(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusBadRequest, "after_id 必须为非负整数")
 		return
 	}
+	if beforeID > 0 && afterID > 0 {
+		writeError(w, http.StatusBadRequest, "before_id 与 after_id 互斥，请只传其一")
+		return
+	}
 	limit, err := intParamInRange(q.Get("limit"), 1, maxPageSize)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("limit 必须在 1~%d 之间", maxPageSize))

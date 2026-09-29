@@ -183,3 +183,31 @@ func TestAuditFiltersEndpoint(t *testing.T) {
 		})
 	}
 }
+
+// TestMessagesCursorMutuallyExclusive 回归 F-11：before_id 与 after_id 同时传入应报错，
+// 避免静默采用其一造成"翻页结果与预期不符"。
+func TestMessagesCursorMutuallyExclusive(t *testing.T) {
+	h := newTestHandlers(t)
+	ctx := context.Background()
+	if err := h.store.CreateSession(ctx, &store.ChatSession{ID: "s-cur", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := h.store.AppendMessage(ctx, "s-cur", store.ChatMessage{Role: "user", Content: "a", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	rec := doJSON(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ListSessionMessages(w, r, "s-cur")
+	}), http.MethodGet, "/api/v1/sessions/s-cur/messages?before_id=1&after_id=1", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("双游标 status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+	// 只传其一仍正常。
+	for _, q := range []string{"?before_id=1", "?after_id=1"} {
+		rec := doJSON(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h.ListSessionMessages(w, r, "s-cur")
+		}), http.MethodGet, "/api/v1/sessions/s-cur/messages"+q, nil)
+		if rec.Code != http.StatusOK {
+			t.Errorf("单游标 %s status = %d, want 200", q, rec.Code)
+		}
+	}
+}

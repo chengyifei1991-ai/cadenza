@@ -352,7 +352,7 @@ check_code "授权 Origin 预检 → 204" 204
 ACAO2=$(hdr -H "Origin: $CORS_ORIGIN" -b "$CJ" "$BASE/api/v1/collectors")
 if [ -n "$ACAO2" ]; then pass; else fail "授权 Origin 应回写 CORS 头"; fi
 
-section "15. M2 契约补强（编辑器/回滚闭环）"
+section "14. M2 契约补强（编辑器/回滚闭环）"
 # 1) 编辑器提交的 note 进入任务 input（详情可回读）；generated_yaml 随任务保留
 req GET "/api/v1/tasks/$APPLY_ID" --cookie "$CJ"
 check_contains "apply 任务的变更说明含 note" "e2e 提交"
@@ -366,7 +366,7 @@ else
   fail "回滚后 effective_config 应被更新且不含 memory_limiter（实际: $(printf '%s' "$EFFECT" | head -c 80 | tr '\n' ' ')）"
 fi
 
-section "16. 任务↔会话绑定（1.1.0-b）"
+section "15. 任务↔会话绑定（1.1.0-b）"
 req POST /api/v1/sessions --cookie "$CJ" --data '{}'
 check_code "创建会话 → 200" 200
 SESS_ID=$(jget "['session_id']")
@@ -395,7 +395,7 @@ check_code "未知会话任务列表 → 404" 404
 req GET "/api/v1/tasks?since=not-a-time" --cookie "$CJ"
 check_code "非法 since 参数 → 400" 400
 
-section "17. 审计筛选与会话消息分页（1.1.0-c）"
+section "16. 审计筛选与会话消息分页（1.1.0-c）"
 req GET "/api/v1/audit?actor=admin&page=1&page_size=10" --cookie "$CJ"
 check_code "审计按 actor 过滤 → 200" 200
 ADMIN_TOTAL=$(python3 -c "import json;print(json.load(open('$BODY'))['total'])")
@@ -426,8 +426,8 @@ check_code "消息 limit=0 越界 → 400" 400
 req GET "/api/v1/sessions/no-such-session/messages" --cookie "$CJ"
 check_code "未知会话消息 → 404" 404
 
-section "18. 任务级 diff 服务端化（1.1.0-d）"
-# 第 16 节的 apply 任务：目标 demo-gateway-1 有生效配置 → 应带基准快照（内容相同则 diff 为空）。
+section "17. 任务级 diff 服务端化（1.1.0-d）"
+# 第 15 节的 apply 任务：目标 demo-gateway-1 有生效配置 → 应带基准快照（内容相同则 diff 为空）。
 req GET "/api/v1/tasks/$SESS_TASK_ID/diff" --cookie "$CJ"
 check_code "apply 任务 diff → 200" 200
 check_json_eq "['has_base']" "True" "apply 任务含基准快照"
@@ -461,7 +461,7 @@ check_code "无生成配置的任务 diff → 409" 409
 req GET "/api/v1/tasks/no-such-task/diff" --cookie "$CJ"
 check_code "未知任务 diff → 404" 404
 
-section "14. 登出"
+section "18. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'
   check_code "登出 → 200" 200

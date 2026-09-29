@@ -48,6 +48,7 @@ func (h *Handlers) ApplyTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "目标 Collector 不存在")
 		return
 	}
+	baseYAML, baseSource := baseForCollector(r.Context(), target, h.deps.Registry)
 	res := validator.Validate(req.YAML, h.deps.Config.OtelcolBin, h.deps.Config.StrictValidate)
 	if !res.Valid {
 		writeError(w, http.StatusBadRequest, "配置校验未通过: "+strings.Join(res.Errors, "; "))
@@ -67,8 +68,10 @@ func (h *Handlers) ApplyTask(w http.ResponseWriter, r *http.Request) {
 		Input:           input,
 		SessionID:       req.SessionID,
 		GeneratedYAML:   req.YAML,
-		// 基准快照：任务创建时的目标生效配置，保证任务级 diff 跨时间可复现。
-		BaseYAML:          target.EffectiveConfig,
+		// 基准快照（F-9）：Agent 上报值优先、回退服务端记录，并标注来源，
+		// 保证任务级 diff 跨时间可复现且语义明确。
+		BaseYAML:          baseYAML,
+		BaseSource:        baseSource,
 		TargetInstanceUID: req.CollectorInstanceUID,
 		TargetGroupID:     req.CollectorInstanceUID,
 	}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/chengyifei1991-ai/cadenza/internal/agent"
 	"github.com/chengyifei1991-ai/cadenza/internal/diff"
+	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/chengyifei1991-ai/cadenza/internal/task"
 	"github.com/chengyifei1991-ai/cadenza/internal/validator"
@@ -256,6 +257,7 @@ func (h *Handlers) GetTaskDiff(w http.ResponseWriter, r *http.Request, id string
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task_id":        t.ID,
 		"base_yaml":      t.BaseYAML,
+		"base_source":    baseSourceOf(t),
 		"generated_yaml": t.GeneratedYAML,
 		"diff":           diff.Unified(t.BaseYAML, t.GeneratedYAML),
 		"has_base":       t.BaseYAML != "",
@@ -543,6 +545,30 @@ func (h *Handlers) ListVersions(w http.ResponseWriter, r *http.Request, uid stri
 		return
 	}
 	writeJSON(w, http.StatusOK, versions)
+}
+
+// baseForCollector 取实例的基准配置与来源（F-9）：Agent 上报值优先，回退服务端记录。
+func baseForCollector(ctx context.Context, c *store.Collector, reg *opampserver.Registry) (string, string) {
+	if c == nil {
+		return "", ""
+	}
+	if reg != nil {
+		if yaml, ok := reg.ReportedEffective(c.InstanceUID); ok && yaml != "" {
+			return yaml, "reported"
+		}
+	}
+	if c.EffectiveConfig != "" {
+		return c.EffectiveConfig, "store"
+	}
+	return "", ""
+}
+
+// baseSourceOf 返回任务的基准来源（无基准时空串）。
+func baseSourceOf(t *store.Task) string {
+	if t.BaseYAML == "" {
+		return ""
+	}
+	return t.BaseSource
 }
 
 // --- helpers ---
