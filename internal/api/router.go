@@ -24,6 +24,8 @@ type RouterOptions struct {
 	DemoMode bool
 	// MCPAuthToken 是 MCP 端点（/mcp）的 Bearer token；为空表示不启用鉴权。
 	MCPAuthToken string
+	// ConfigSource 是配置版本来源（builtin/git），随 /system/info 下发。
+	ConfigSource string
 	// Logger 是请求日志（可 nil）。
 	Logger *slog.Logger
 }
@@ -84,7 +86,8 @@ func (r *Router) apiMux() *http.ServeMux {
 	mux.HandleFunc("/api/v1/auth/login", r.opts.Auth.HandleLogin)
 	mux.HandleFunc("/api/v1/auth/logout", r.opts.Auth.HandleLogout)
 	mux.HandleFunc("/api/v1/auth/me", r.opts.Auth.HandleMe)
-	mux.HandleFunc("/api/v1/system/info", SystemInfo(r.opts.Auth, r.opts.DemoMode, r.opts.MCPAuthToken != ""))
+	gitEnabled := r.handlers.git != nil && r.opts.ConfigSource == "git"
+	mux.HandleFunc("/api/v1/system/info", SystemInfo(r.opts.Auth, r.opts.DemoMode, r.opts.MCPAuthToken != "", r.opts.ConfigSource, gitEnabled))
 
 	// 会话（GET=列表 / POST=创建）与会话详情。
 	mux.HandleFunc("/api/v1/sessions", h.HandleSessions)
@@ -122,6 +125,11 @@ func (r *Router) apiMux() *http.ServeMux {
 	mux.HandleFunc("/api/v1/audit", h.ListAudit)
 	mux.HandleFunc("/api/v1/stats", h.Stats)
 	mux.HandleFunc("/api/v1/stats/ops", h.StatsOps)
+
+	// GitOps 可选模式：本地 git 仓库只读查询（未启用时返回 409）。
+	mux.HandleFunc("/api/v1/git/status", h.GitStatus)
+	mux.HandleFunc("/api/v1/git/commits", h.GitCommits)
+	mux.HandleFunc("/api/v1/git/file", h.GitFile)
 
 	// 未注册的 /api/* 返回 JSON 404（而非 SPA fallback）。
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {

@@ -75,7 +75,7 @@ func TestSystemInfoMCPAuth(t *testing.T) {
 		{name: "已启用", enabled: true, want: `"mcp_auth":true`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := doJSON(t, SystemInfo(am, false, tc.enabled), http.MethodGet, "/api/v1/system/info", nil)
+			rec := doJSON(t, SystemInfo(am, false, tc.enabled, "builtin", false), http.MethodGet, "/api/v1/system/info", nil)
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d", rec.Code)
 			}

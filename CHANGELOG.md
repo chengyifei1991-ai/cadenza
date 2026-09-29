@@ -32,6 +32,22 @@
 
 ### 新增
 
+- **GitOps 可选模式（CONFIG_SOURCE=git）**：配置版本权威交给本地 git 仓库，Cadenza 只做
+  **只读**读取 + 下发 + 生效确认 + 审计溯源（默认 `builtin` 内置模式行为不变，零回归）。
+  - `internal/gitsource`：调用系统 `git` CLI（零新依赖），仅 rev-parse/log/show 只读命令；
+    ref 与 pathspec 白名单校验（拒绝 `-` 注入、`..` 上跳、绝对路径、`ref:path` 冒号），
+    命令带超时、禁交互提示与可选锁，结果短 TTL 缓存。
+  - 配置：`CONFIG_SOURCE` / `GIT_REPO_DIR` / `GIT_CONFIG_PATHSPEC`（支持 `{uid}`/`%s` 占位）/
+    `GIT_REF`；`CONFIG_SOURCE=git` 缺仓库目录或路径模板时**启动 fail-closed**。
+  - 接口：`GET /api/v1/git/status|commits|file`（未启用时 409 且说明原因）；
+    `POST /api/v1/tasks/apply` 支持 `git_ref`（只给 ref 即可从仓库读取内容）；
+    `/api/v1/system/info` 增 `config_source` / `git_enabled`。
+  - 溯源：`tasks` 增 `git_commit` / `git_path` / `git_ref`（幂等迁移），审计追加 `git 溯源 commit=… path=… ref=…`。
+  - MCP 新增工具 `get_git_config`（10 → 11，README 同步）。
+  - 门禁：`internal/gitsource` 单测（真实临时仓库、安全校验、按 ref 读取）、
+    配置 fail-closed 单测、API/GitOps 单测、`tests/gitops-e2e.sh`（14 项，已接入 CI e2e job）。
+
+
 - **任务 ↔ 会话硬绑定（1.1.0-b）**：`Task` 新增 `session_id`（旧库幂等迁移 + 索引）——
   Orchestrator 在 ReAct 循环前把会话 ID 注入 ctx，Agent 工具创建任务时回写；REST
   `apply`/`rollback` 支持可选 `session_id`；新增 `GET /api/v1/sessions/{id}/tasks` 与

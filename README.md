@@ -18,7 +18,7 @@
 | 对话生成配置 | 自然语言 → LLM 生成 YAML → 校验 → 审批 → 下发 |
 | 自动优化配置 | 基于 Collector 上报状态分析并提议优化方案 |
 | 版本升级 | `PackagesAvailable` 协议能力（Beta），任务化审批 |
-| MCP Server | `/mcp`（streamable HTTP），10 个工具，外部 LLM/IDE 可直接调用 |
+| MCP Server | `/mcp`（streamable HTTP），11 个工具，外部 LLM/IDE 可直接调用 |
 | REST API | `/api/v1/*`，Web 前端使用 |
 | 审批闭环 | 会话 → 任务 → 审批 → 下发，全部审计留痕 |
 | LLM 稳定性 | 超时 → 指数退避重试 → failover 多模型切换 → 熔断 → 缓存 → 故障隔离 |
@@ -97,6 +97,10 @@ export DEMO_MODE=true                   # 可选：空库注入演示数据（�
 | `DB_DRIVER` / `DB_DSN` / `DB_SQLITE_PATH` | `sqlite` | 存储：`mysql`（生产）或 `sqlite`（开发） |
 | `OPAMP_AUTH_TOKEN` | 空（放行） | Collector 接入认证 Bearer token |
 | `MCP_AUTH_TOKEN` | 空（不启用） | `/mcp` 端点 Bearer token；**公网部署必须配置**（为空时启动告警） |
+| `CONFIG_SOURCE` | `builtin` | 配置版本来源：`builtin`（内置版本快照 + 回滚）或 `git`（GitOps 可选模式） |
+| `GIT_REPO_DIR` | 空 | GitOps 模式必填：本地 git 仓库路径（**只读**，缺省则启动 fail-closed） |
+| `GIT_CONFIG_PATHSPEC` | 空 | GitOps 模式必填：仓库内配置路径模板，支持 `{uid}` / `%s` 占位（如 `collectors/{uid}.yaml`） |
+| `GIT_REF` | `HEAD` | GitOps 默认读取的 ref（分支/tag/commit） |
 | `OTELCOL_BIN` / `STRICT_VALIDATE` | `/usr/local/bin/otelcol-contrib` / `false` | otelcol-contrib v0.156.0 深度校验 |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | DeepSeek | 主模型（OpenAI 兼容） |
 | `LLM_BACKUP_*` | 空 | 备用模型（failover 第二候选） |
@@ -139,6 +143,7 @@ WebSocket 连接支持配置主动即时推送；HTTP 拉取模式下，待下�
 | `approve_task` / `reject_task` | 审批 / 拒绝 |
 | `list_pending_tasks` | 列出待审批任务 |
 | `get_task_diff` | 获取任务的配置差异（基准 vs 生成，服务端 unified diff） |
+| `get_git_config` | （GitOps）读取 git 仓库中该 Collector 的配置 |
 
 > ⚠️ **配置原文含敏感值**：`/mcp`、`/api/v1/collectors/{uid}` 与 `/api/v1/tasks/{id}/diff`
 > 会返回配置（含基准快照）原文，其中可能包含 `Authorization` 头、Token 等敏感内容

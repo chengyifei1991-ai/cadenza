@@ -272,7 +272,7 @@ func TestStatsAndSessions(t *testing.T) {
 // TestSystemInfo 验证公开系统信息端点内容。
 func TestSystemInfo(t *testing.T) {
 	am := newTestAuth(t)
-	h := SystemInfo(am, true, false)
+	h := SystemInfo(am, true, false, "builtin", false)
 	rec := doJSON(t, h, http.MethodGet, "/api/v1/system/info", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("system/info status = %d", rec.Code)

@@ -18,6 +18,7 @@ import (
 
 	"github.com/chengyifei1991-ai/cadenza/internal/agent"
 	"github.com/chengyifei1991-ai/cadenza/internal/diff"
+	"github.com/chengyifei1991-ai/cadenza/internal/gitsource"
 	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/chengyifei1991-ai/cadenza/internal/task"
@@ -76,11 +77,29 @@ type Handlers struct {
 	orch   *agent.Orchestrator
 	deps   *agent.Deps
 	logger *slog.Logger
+	// git 是 GitOps 可选模式的本地仓库只读访问器；nil 表示内置模式。
+	git *gitsource.Repo
+	// configSource 是配置版本来源（builtin/git），随 /system/info 下发。
+	configSource string
 }
 
 // NewHandlers 创建 REST handlers。
-func NewHandlers(st store.Store, tasks *task.Service, orch *agent.Orchestrator, deps *agent.Deps, logger *slog.Logger) *Handlers {
-	return &Handlers{store: st, tasks: tasks, orch: orch, deps: deps, logger: logger}
+// git 为 nil（内置模式）时，/api/v1/git/* 与 apply 的 git_ref 会返回明确的"未启用"错误。
+func NewHandlers(st store.Store, tasks *task.Service, orch *agent.Orchestrator, deps *agent.Deps,
+	logger *slog.Logger, git *gitsource.Repo, configSource string) *Handlers {
+	if configSource == "" {
+		configSource = "builtin"
+	}
+	return &Handlers{store: st, tasks: tasks, orch: orch, deps: deps, logger: logger,
+		git: git, configSource: configSource}
+}
+
+// gitRepo 返回 GitOps 模式下的仓库访问器；未启用时返回 false。
+func (h *Handlers) gitRepo() (*gitsource.Repo, bool) {
+	if h.git == nil || h.configSource != "git" {
+		return nil, false
+	}
+	return h.git, true
 }
 
 // --- 会话 ---

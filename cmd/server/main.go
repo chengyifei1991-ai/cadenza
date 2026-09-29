@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/chengyifei1991-ai/cadenza/internal/api"
 	"github.com/chengyifei1991-ai/cadenza/internal/config"
 	"github.com/chengyifei1991-ai/cadenza/internal/demo"
+	"github.com/chengyifei1991-ai/cadenza/internal/gitsource"
 	"github.com/chengyifei1991-ai/cadenza/internal/mcp"
 	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
@@ -93,6 +95,22 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// GitOps 可选模式：本地 git 仓库只读访问（缺仓库目录已在 config 校验阶段 fail-closed）。
+	var gitRepo *gitsource.Repo
+	if cfg.ConfigSource == "git" {
+		gitRepo, err = gitsource.New(cfg.GitRepoDir)
+		if err != nil {
+			return fmt.Errorf("GitOps 模式初始化失败: %w", err)
+		}
+		st, statErr := gitRepo.StatusOf(context.Background(), cfg.GitRef)
+		if statErr != nil {
+			return fmt.Errorf("GitOps 模式读取仓库状态失败: %w", statErr)
+		}
+		deps.Git = gitRepo
+		logger.Info("GitOps 模式已启用", "repo", gitRepo.Dir(), "ref", statErr0(cfg.GitRef),
+			"head", st.ShortSHA, "pathspec", cfg.GitConfigPathspec)
+	}
+
 	// Web 管理面鉴权。
 	authMgr, err := api.NewAuthManager(cfg, logger)
 	if err != nil {
@@ -104,13 +122,14 @@ func run(logger *slog.Logger) error {
 	}
 
 	// REST API 路由。
-	handlers := api.NewHandlers(st, taskSvc, orch, deps, logger)
+	handlers := api.NewHandlers(st, taskSvc, orch, deps, logger, gitRepo, cfg.ConfigSource)
 	router, err := api.NewRouter(opampSrv, mcpSrv, handlers, api.RouterOptions{
 		Auth:         authMgr,
 		WebHandler:   buildWebHandler(cfg, logger),
 		CORSOrigins:  cfg.Web.CORSAllowedOrigins,
 		DemoMode:     cfg.Web.DemoMode,
 		MCPAuthToken: cfg.MCPAuthToken,
+		ConfigSource: cfg.ConfigSource,
 		Logger:       logger,
 	})
 	if err != nil {
@@ -156,6 +175,14 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		return httpSrv.Shutdown(shutdownCtx)
 	}
+}
+
+// statErr0 归一化 ref 展示值（空 = HEAD）。
+func statErr0(ref string) string {
+	if ref == "" {
+		return "HEAD"
+	}
+	return ref
 }
 
 // buildWebHandler 构建 Web 静态资源处理器：优先磁盘目录（WEB_DIR 覆盖），

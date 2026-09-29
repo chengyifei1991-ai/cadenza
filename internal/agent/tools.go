@@ -13,6 +13,7 @@ import (
 
 	"github.com/chengyifei1991-ai/cadenza/internal/config"
 	"github.com/chengyifei1991-ai/cadenza/internal/diff"
+	"github.com/chengyifei1991-ai/cadenza/internal/gitsource"
 	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/chengyifei1991-ai/cadenza/internal/task"
@@ -33,6 +34,8 @@ type Deps struct {
 	Logger   *slog.Logger
 	// Now 可注入以便测试；nil 时使用 time.Now。
 	Now func() time.Time
+	// Git 是 GitOps 可选模式的本地仓库只读访问器（nil = 内置模式）。
+	Git *gitsource.Repo
 }
 
 func (d *Deps) now() time.Time {
@@ -116,6 +119,10 @@ func NewTools(d *Deps) []tool.Tool {
 	diffSchema := str("获取任务的配置差异（基准 vs 生成，服务端 unified diff）", "task_id")
 	addProp(diffSchema, "task_id", "string", "任务 ID")
 
+	gitCfgSchema := str("（GitOps）读取 git 仓库中该 Collector 的配置文件内容", "instance_uid")
+	addProp(gitCfgSchema, "instance_uid", "string", "Collector 的 instance_uid")
+	addProp(gitCfgSchema, "ref", "string", "可选：分支/tag/commit（缺省用配置的 GIT_REF）")
+
 	return []tool.Tool{
 		&simpleTool{decl: &tool.Declaration{Name: "list_collectors", Description: "查询 Collector 集群状态", InputSchema: listSchema}, handle: d.handleListCollectors},
 		&simpleTool{decl: &tool.Declaration{Name: "get_collector_config", Description: "获取 Collector 当前生效配置", InputSchema: getCfgSchema}, handle: d.handleGetConfig},
@@ -127,6 +134,7 @@ func NewTools(d *Deps) []tool.Tool {
 		&simpleTool{decl: &tool.Declaration{Name: "reject_task", Description: "拒绝任务", InputSchema: rejectSchema}, handle: d.handleReject},
 		&simpleTool{decl: &tool.Declaration{Name: "list_pending_tasks", Description: "列出待审批任务", InputSchema: pendingSchema}, handle: d.handleListPending},
 		&simpleTool{decl: &tool.Declaration{Name: "get_task_diff", Description: "获取任务的配置差异（基准 vs 生成）", InputSchema: diffSchema}, handle: d.handleGetTaskDiff},
+		&simpleTool{decl: &tool.Declaration{Name: "get_git_config", Description: "（GitOps）读取 git 中该 Collector 的配置", InputSchema: gitCfgSchema}, handle: d.handleGetGitConfig},
 	}
 }
 
@@ -204,6 +212,36 @@ func (d *Deps) markTaskFailed(ctx context.Context, taskID, reason string) {
 		return
 	}
 	d.setTaskError(ctx, taskID, reason)
+}
+
+// handleGetGitConfig 实现 get_git_config：GitOps 模式下按 pathspec 读取仓库中的配置内容。
+func (d *Deps) handleGetGitConfig(ctx context.Context, args map[string]any) (any, error) {
+	uid := getString(args, "instance_uid")
+	if uid == "" {
+		return nil, fmt.Errorf("instance_uid 不能为空")
+	}
+	if d.Git == nil || d.Config == nil || d.Config.ConfigSource != "git" {
+		return nil, fmt.Errorf("未启用 GitOps 模式（CONFIG_SOURCE=git），无法从 git 读取配置")
+	}
+	ref := getString(args, "ref")
+	if ref == "" {
+		ref = d.Config.GitRef
+	}
+	path, err := gitsource.ExpandPathspec(d.Config.GitConfigPathspec, uid)
+	if err != nil {
+		return nil, err
+	}
+	content, err := d.Git.ShowFile(ctx, ref, path)
+	if err != nil {
+		return nil, err
+	}
+	sha, err := d.Git.Resolve(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"instance_uid": uid, "ref": ref, "git_commit": sha, "git_path": path, "yaml": content,
+	}, nil
 }
 
 // taskBaseSource 返回任务基准来源（无基准时空串）。

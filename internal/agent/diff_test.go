@@ -100,3 +100,32 @@ func newDiffTestStore(t *testing.T) store.Store {
 	t.Cleanup(func() { st.Close() })
 	return st
 }
+
+// TestGetGitConfigTool 验证 GitOps 工具：注册、未启用时报错、启用时按 pathspec 读取内容。
+func TestGetGitConfigTool(t *testing.T) {
+	deps := &Deps{Store: newDiffTestStore(t)}
+	var found bool
+	for _, tl := range NewTools(deps) {
+		if tl.Declaration().Name == "get_git_config" {
+			found = true
+			if _, ok := tl.(tool.CallableTool); !ok {
+				t.Fatal("get_git_config 未实现 CallableTool（MCP 无法调用）")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("NewTools 未注册 get_git_config")
+	}
+
+	ctx := context.Background()
+	// 未启用 GitOps → 明确报错（不静默返回空）。
+	if _, err := deps.handleGetGitConfig(ctx, map[string]any{"instance_uid": "x"}); err == nil {
+		t.Error("未启用 GitOps 时应报错")
+	} else if !strings.Contains(err.Error(), "GitOps") {
+		t.Errorf("错误信息应说明未启用 GitOps: %v", err)
+	}
+	// 缺 instance_uid → 报错。
+	if _, err := deps.handleGetGitConfig(ctx, map[string]any{}); err == nil {
+		t.Error("缺 instance_uid 应报错")
+	}
+}

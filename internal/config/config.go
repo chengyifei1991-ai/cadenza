@@ -106,6 +106,15 @@ type Config struct {
 	// RequireApproval 控制 generate/optimize 任务默认是否要求审批。
 	RequireApproval bool
 
+	// ConfigSource 是配置版本来源：builtin（内置版本快照 + 回滚，默认）或 git（GitOps 可选模式）。
+	ConfigSource string
+	// GitRepoDir 是 GitOps 模式下的本地 git 仓库路径（只读使用）。
+	GitRepoDir string
+	// GitConfigPathspec 是仓库内配置文件路径模板，支持 {uid} / %s 占位（按 Collector 展开）。
+	GitConfigPathspec string
+	// GitRef 是默认读取的 ref（分支/tag/commit），空则用 HEAD。
+	GitRef string
+
 	// Web 是 Web 控制台相关配置。
 	Web WebConfig
 }
@@ -113,15 +122,19 @@ type Config struct {
 // Load 从环境变量加载配置，返回缺失必需项的错误。
 func Load() (*Config, error) {
 	cfg := &Config{
-		HTTPAddr:        getEnv("HTTP_ADDR", ":8080"),
-		DBDriver:        getEnv("DB_DRIVER", "sqlite"),
-		DBDSN:           getEnv("DB_DSN", ""),
-		DBSQLitePath:    getEnv("DB_SQLITE_PATH", "./data/opamp.db"),
-		OpAMPAuthToken:  os.Getenv("OPAMP_AUTH_TOKEN"),
-		MCPAuthToken:    os.Getenv("MCP_AUTH_TOKEN"),
-		OtelcolBin:      getEnv("OTELCOL_BIN", "/usr/local/bin/otelcol-contrib"),
-		StrictValidate:  getBool("STRICT_VALIDATE", false),
-		RequireApproval: getBool("REQUIRE_APPROVAL", true),
+		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
+		DBDriver:          getEnv("DB_DRIVER", "sqlite"),
+		DBDSN:             getEnv("DB_DSN", ""),
+		DBSQLitePath:      getEnv("DB_SQLITE_PATH", "./data/opamp.db"),
+		OpAMPAuthToken:    os.Getenv("OPAMP_AUTH_TOKEN"),
+		MCPAuthToken:      os.Getenv("MCP_AUTH_TOKEN"),
+		OtelcolBin:        getEnv("OTELCOL_BIN", "/usr/local/bin/otelcol-contrib"),
+		StrictValidate:    getBool("STRICT_VALIDATE", false),
+		RequireApproval:   getBool("REQUIRE_APPROVAL", true),
+		ConfigSource:      getEnv("CONFIG_SOURCE", "builtin"),
+		GitRepoDir:        os.Getenv("GIT_REPO_DIR"),
+		GitConfigPathspec: os.Getenv("GIT_CONFIG_PATHSPEC"),
+		GitRef:            getEnv("GIT_REF", "HEAD"),
 		Web: WebConfig{
 			DisableWeb:         getBool("DISABLE_WEB", false),
 			Dir:                os.Getenv("WEB_DIR"),
@@ -171,7 +184,34 @@ func (c *Config) validate() error {
 	if err := c.validateWeb(); err != nil {
 		return err
 	}
+	if err := c.validateGitOps(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateGitOps 校验 GitOps 可选模式配置（缺仓库目录即 fail-closed，避免"以为在看 git，实际用内置"）。
+func (c *Config) validateGitOps() error {
+	switch c.ConfigSource {
+	case "", "builtin":
+		if c.ConfigSource == "" {
+			c.ConfigSource = "builtin"
+		}
+		return nil
+	case "git":
+		if strings.TrimSpace(c.GitRepoDir) == "" {
+			return fmt.Errorf("config: GIT_REPO_DIR is required when CONFIG_SOURCE=git")
+		}
+		if strings.TrimSpace(c.GitConfigPathspec) == "" {
+			return fmt.Errorf("config: GIT_CONFIG_PATHSPEC is required when CONFIG_SOURCE=git")
+		}
+		if c.GitRef == "" {
+			c.GitRef = "HEAD"
+		}
+		return nil
+	default:
+		return fmt.Errorf("config: CONFIG_SOURCE must be \"builtin\" or \"git\", got %q", c.ConfigSource)
+	}
 }
 
 // validateWeb 校验 Web 相关配置（安全默认值：simple 模式缺失口令哈希时启动失败）。

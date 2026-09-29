@@ -159,6 +159,11 @@ type Task struct {
 	// BaseYAML 是本次变更的**基准配置**快照（下发前目标当前生效配置的代表值），
 	// 供服务端生成任务级 diff（分组目标任务没有单一实例基准，故落库固化）。
 	BaseYAML string `json:"base_yaml,omitempty"`
+	// GitCommit / GitPath / GitRef 记录该任务的 git 溯源（GitOps 可选模式）；
+	// 内置模式下为空，互不影响。
+	GitCommit string `json:"git_commit,omitempty"`
+	GitPath   string `json:"git_path,omitempty"`
+	GitRef    string `json:"git_ref,omitempty"`
 	// BaseSource 标明 BaseYAML 的来源：reported（Agent 权威上报）/ store（服务端记录，
 	// 可能是下发意图值）/ 空串（无基准）。避免"意图值"被误当作"正在运行的配置"。
 	BaseSource string `json:"base_source,omitempty"`

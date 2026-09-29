@@ -47,7 +47,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 		Store: st, Tasks: taskSvc, OpAMP: opampSrv, Model: fake,
 		Config: &config.Config{RequireApproval: true, OtelcolBin: ""}, Logger: logger,
 	}
-	return NewHandlers(st, taskSvc, agent.NewOrchestrator(deps), deps, logger)
+	return NewHandlers(st, taskSvc, agent.NewOrchestrator(deps), deps, logger, nil, "builtin")
 }
 
 // fakeModel 与 agent 包测试相同的可编程模型（此处独立实现避免跨包依赖）。
