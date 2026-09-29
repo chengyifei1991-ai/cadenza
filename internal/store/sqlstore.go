@@ -19,6 +19,38 @@ type sqlStore struct {
 	driver string
 }
 
+// isBusyError 判断是否为 SQLite 忙锁错误（需要重试）。
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+}
+
+// execCtx 执行写语句：遇 SQLITE_BUSY 做有限重试（busy_timeout 之外的兜底）。
+// 并发来源：HTTP 处理器、OpAMP 状态上报与埋点事件同时写库。
+func (s *sqlStore) execCtx(ctx context.Context, query string, args ...any) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = func() error {
+			_, execErr := s.db.ExecContext(ctx, query, args...)
+			return execErr
+		}(); err == nil {
+			return nil
+		}
+		if !isBusyError(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(20*(attempt+1)) * time.Millisecond):
+		}
+	}
+	return err
+}
+
 // Close 实现 Store.Close。
 func (s *sqlStore) Close() error {
 	return s.db.Close()
@@ -394,14 +426,13 @@ func (s *sqlStore) CreateTask(ctx context.Context, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal approvers: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	return s.execCtx(ctx, `
 		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, base_yaml, base_source, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.BaseYAML, t.BaseSource,
 		t.SessionID, t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver, t.RejectReason,
 		t.ModelUsed, t.Error, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt))
-	return err
 }
 
 func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
@@ -410,14 +441,13 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 		return fmt.Errorf("marshal approvers: %w", err)
 	}
 	t.UpdatedAt = time.Now().UTC()
-	_, err = s.db.ExecContext(ctx, `
+	return s.execCtx(ctx, `
 		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, base_yaml=?, base_source=?, session_id=?, target_group_id=?,
 			target_instance_uid=?, rollback_version_id=?, approvers=?, approver=?, reject_reason=?, model_used=?, error=?, updated_at=?
 		WHERE id = ?`,
 		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.BaseYAML, t.BaseSource, t.SessionID,
 		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver,
 		t.RejectReason, t.ModelUsed, t.Error, fmtTime(t.UpdatedAt), t.ID)
-	return err
 }
 
 func (s *sqlStore) GetTask(ctx context.Context, id string) (*Task, error) {
@@ -631,10 +661,9 @@ func (s *sqlStore) ListMessages(ctx context.Context, sessionID string, beforeID,
 
 // AppendTaskEvent 追加一条任务状态迁移事件（埋点，best effort）。
 func (s *sqlStore) AppendTaskEvent(ctx context.Context, e *TaskEvent) error {
-	_, err := s.db.ExecContext(ctx,
+	return s.execCtx(ctx,
 		`INSERT INTO task_events (task_id, from_status, to_status, created_at) VALUES (?, ?, ?, ?)`,
 		e.TaskID, e.FromStatus, e.ToStatus, fmtTime(e.CreatedAt))
-	return err
 }
 
 // ListTaskEvents 返回 since 之后（含）的状态迁移事件，按 id 升序（同一秒内也稳定）。
@@ -681,10 +710,9 @@ func (s *sqlStore) SessionExists(ctx context.Context, id string) (bool, error) {
 }
 
 func (s *sqlStore) AppendMessage(ctx context.Context, sessionID string, m ChatMessage) error {
-	_, err := s.db.ExecContext(ctx,
+	return s.execCtx(ctx,
 		`INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)`,
 		sessionID, m.Role, m.Content, fmtTime(m.CreatedAt))
-	return err
 }
 
 // listSessionQuery 是会话列表的查询骨架：每行附带消息聚合摘要（标量子查询），

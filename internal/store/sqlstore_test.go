@@ -6,6 +6,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -725,5 +728,101 @@ func TestTaskEvents(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSQLiteLockSettings 回归"database is locked"缺陷：SQLite 必须设置 busy_timeout，
+// 文件库额外启用 WAL（并发写：HTTP 处理器 + OpAMP 状态上报 + 埋点事件）。
+func TestSQLiteLockSettings(t *testing.T) {
+	dir := t.TempDir()
+	st, err := New("sqlite", dir+"/test.db")
+	if err != nil {
+		t.Fatalf("New(sqlite 文件库): %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	sqlSt := st.(*sqlStore)
+
+	var timeout int
+	if err := sqlSt.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("查询 busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", timeout)
+	}
+	var mode string
+	if err := sqlSt.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("查询 journal_mode: %v", err)
+	}
+	if strings.ToLower(mode) != "wal" {
+		t.Errorf("文件库 journal_mode = %q, want wal", mode)
+	}
+
+	// 内存库：仍设置 busy_timeout，但不启用 WAL（内存库不支持）。
+	mem := newTestStore(t).(*sqlStore)
+	if err := mem.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("内存库 busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("内存库 busy_timeout = %d, want 5000", timeout)
+	}
+}
+
+// TestConcurrentWritesNoBusy 回归并发写：多协程同时写任务与状态迁移事件，
+// 不得出现 SQLITE_BUSY（busy_timeout + 有限重试兜底）。
+func TestConcurrentWritesNoBusy(t *testing.T) {
+	dir := t.TempDir()
+	st, err := New("sqlite", dir+"/conc.db")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	const workers, perWorker = 8, 15
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				id := fmt.Sprintf("c-%d-%d", w, i)
+				if err := st.CreateTask(ctx, &Task{
+					ID: id, Type: TaskTypeGenerate, Status: TaskStatusPending,
+					CreatedAt: now, UpdatedAt: now,
+				}); err != nil {
+					errCh <- fmt.Errorf("CreateTask(%s): %w", id, err)
+					return
+				}
+				tk, err := st.GetTask(ctx, id)
+				if err != nil {
+					errCh <- fmt.Errorf("GetTask(%s): %w", id, err)
+					return
+				}
+				tk.Status = TaskStatusDone
+				if err := st.UpdateTask(ctx, tk); err != nil {
+					errCh <- fmt.Errorf("UpdateTask(%s): %w", id, err)
+					return
+				}
+				if err := st.AppendTaskEvent(ctx, &TaskEvent{
+					TaskID: id, FromStatus: "pending", ToStatus: "done", CreatedAt: now,
+				}); err != nil {
+					errCh <- fmt.Errorf("AppendTaskEvent(%s): %w", id, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if isBusyError(err) {
+			t.Fatalf("并发写出现忙锁错误（回归）：%v", err)
+		}
+		t.Fatalf("并发写失败: %v", err)
+	}
+	if _, total, err := st.ListTasks(ctx, TaskFilter{}, 0, 0); err != nil || total != workers*perWorker {
+		t.Errorf("任务总数 = %d (err=%v), want %d", total, err, workers*perWorker)
 	}
 }

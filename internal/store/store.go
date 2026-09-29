@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
@@ -125,12 +126,30 @@ var ErrNotFound = fmt.Errorf("store: record not found")
 
 // New 创建 Store。driver 支持 "mysql" 与 "sqlite"。
 func New(driver, dsn string) (Store, error) {
-	db, err := sql.Open(driver, dsn)
+	openDSN := dsn
+	if driver == "sqlite" {
+		// SQLITE_BUSY 的根治：busy_timeout 与 journal_mode 都是**每连接**属性，
+		// 只在 open 后 Exec 一次只对池中一条连接生效，其余连接仍会立即报忙锁。
+		// 因此把 pragma 写进 DSN，让连接池每条新连接都带上（modernc.org/sqlite 语法）。
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
+		}
+		openDSN = dsn + sep + "_pragma=busy_timeout(5000)"
+		if !strings.Contains(dsn, ":memory:") && !strings.Contains(dsn, "mode=memory") {
+			openDSN += "&_pragma=journal_mode(WAL)"
+		}
+	}
+	db, err := sql.Open(driver, openDSN)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", driver, err)
 	}
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("store: ping %s: %w", driver, err)
+	}
+	if driver == "sqlite" {
+		// 并发写上限：SQLite 单写者，限制连接数减少锁竞争（读仍可并发）。
+		db.SetMaxOpenConns(4)
 	}
 	s := &sqlStore{db: db, driver: driver}
 	if err := s.initSchema(); err != nil {

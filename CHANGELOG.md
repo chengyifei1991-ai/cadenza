@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **SQLite 忙锁导致任务卡死（严重）**：并发写入（HTTP 处理器 + OpAMP 状态上报 + 1.1.0-e 新增的
+  埋点事件）触发 `database is locked (SQLITE_BUSY)`，审批请求返回 400 且任务**永久停在 applying**。
+  根因：`busy_timeout`/`journal_mode` 是**每连接**属性，仅在 open 后 Exec 一次只对池中一条连接生效；
+  现状改为把 pragma 写进 DSN（连接池每条新连接均生效）并限制 SQLite 连接数，写路径增加忙锁有限重试；
+  同时补齐兜底：完成任务状态写入失败时尽力标记 `failed`，不再让任务停留在中间态。
+
+
 ### 变更
 
 - **参数校验收紧（1.1.0-c）**：任务列表 `status`/`type` 非法枚举、审计 `action` 非法枚举、

@@ -159,9 +159,28 @@ except Exception: print('')" 2>/dev/null)
   printf '%s' "$id"
 }
 
-approve_and_wait() { # $1=task id -> 输出 task json
-  curl -s -m 30 -X POST "$BASE/api/v1/tasks/$1/approve" -H 'Content-Type: application/json' -d '{}' >/dev/null
-  curl -s -m 5 "$BASE/api/v1/tasks/$1"
+approve_and_wait() { # $1=task id -> 输出 task json（approve 非 200 时报错退出）
+  local code body
+  code=$(curl -s -m 30 -o "$WORKDIR/approve.json" -w '%{http_code}' \
+    -X POST "$BASE/api/v1/tasks/$1/approve" -H 'Content-Type: application/json' -d '{}')
+  if [ "$code" != "200" ]; then
+    echo "    [approve 失败 http=$code] $(head -c 200 "$WORKDIR/approve.json")" >&2
+    bad "approve 返回 http=$code（期望 200）"
+    printf '{"status":"approve-failed"}'
+    return
+  fi
+  # 派发包含"生效确认"等待，任务可能稍后才落终态：有界轮询到 done/failed。
+  body=$(curl -s -m 5 "$BASE/api/v1/tasks/$1")
+  for _ in $(seq 1 20); do
+    case "$(printf '%s' "$body" | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('status',''))
+except Exception: print('')")" in
+      done|failed|rejected) break ;;
+    esac
+    sleep 0.5
+    body=$(curl -s -m 5 "$BASE/api/v1/tasks/$1")
+  done
+  printf '%s' "$body"
 }
 
 echo "== 用例 2：下发同配置 → 生效确认（不发重启命令） =="

@@ -197,6 +197,15 @@ func (d *Deps) handleGetTaskDiff(ctx context.Context, args map[string]any) (any,
 	}, nil
 }
 
+// markTaskFailed 尽力把任务标记为 failed（避免状态写入失败导致任务永久停在中间态）。
+func (d *Deps) markTaskFailed(ctx context.Context, taskID, reason string) {
+	if _, err := d.Tasks.SetStatus(ctx, taskID, store.TaskStatusFailed); err != nil {
+		d.log().Error("标记任务失败状态出错（任务可能停留在中间态）", "task_id", taskID, "reason", reason, "error", err)
+		return
+	}
+	d.setTaskError(ctx, taskID, reason)
+}
+
 // taskBaseSource 返回任务基准来源（无基准时空串）。
 func taskBaseSource(t *store.Task) string {
 	if t.BaseYAML == "" {
@@ -575,6 +584,8 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 		d.recordConfigVersion(ctx, c.InstanceUID, t.GeneratedYAML)
 	}
 	if _, err := d.Tasks.SetStatus(ctx, taskID, store.TaskStatusDone); err != nil {
+		// 落库失败（如 SQLite 忙锁）不能让任务停在 applying：尽力标记 failed 并上抛。
+		d.markTaskFailed(ctx, taskID, "完成任务状态写入失败")
 		return nil, err
 	}
 	d.audit(ctx, approver, store.AuditActionApply, taskID, validator.Hash(t.GeneratedYAML))
@@ -620,6 +631,7 @@ func (d *Deps) dispatchRollback(ctx context.Context, t *store.Task, approver str
 	}
 	d.recordConfigVersion(ctx, t.TargetInstanceUID, target.YAML)
 	if _, err := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusDone); err != nil {
+		d.markTaskFailed(ctx, t.ID, "完成回滚状态写入失败")
 		return nil, err
 	}
 	d.audit(ctx, approver, store.AuditActionRollback, t.ID, validator.Hash(target.YAML))
