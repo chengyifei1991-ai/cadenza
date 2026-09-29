@@ -6,6 +6,14 @@
 
 ### 修复
 
+- **页面显示 Collector"未知"（真实环境暴露）**：OpAMP 客户端只在健康**变化**时携带 health，
+  心跳/effective 上报不带；服务端把"本条未上报"当 unknown，导致 healthy 被自己的心跳冲掉
+  （实测：collector 活着、端口在听，页面显示未知）。改为"未上报=状态未变化"沿用上次结果，
+  仅当从未收到健康信号或离线后重连才置 unknown。（`internal/opampserver`，含回归测试）
+- **服务端重启后 hostname/version 变空**：元数据只在首次连接上报一次，重启后注册表为空、
+  增量消息又无描述，空值覆盖了持久化字段。改为注册表缺失时先从存储回填，并在缺少有效配置
+  或元数据时置 `ReportFullState` 请求完整状态（客户端据此重发描述）。（含回归测试）
+
 - **SQLite 忙锁导致任务卡死（严重）**：并发写入（HTTP 处理器 + OpAMP 状态上报 + 1.1.0-e 新增的
   埋点事件）触发 `database is locked (SQLITE_BUSY)`，审批请求返回 400 且任务**永久停在 applying**。
   根因：`busy_timeout`/`journal_mode` 是**每连接**属性，仅在 open 后 Exec 一次只对池中一条连接生效；

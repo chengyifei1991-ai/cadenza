@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Card, Select, Table, Tag, Typography } from "antd";
+import { SearchOutlined } from "@ant-design/icons";
+import { Card, Select, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { api } from "../api/client";
 import ErrorState from "../components/ErrorState";
@@ -20,7 +21,7 @@ export default function TaskCenterPage() {
   const [page, setPage] = useState(1);
 
   const query = useQuery({
-    queryKey: ["tasks", status, page],
+    queryKey: ["tasks", status, taskType, page],
     queryFn: () =>
       api.listTasks({
         status: status || undefined,
@@ -32,22 +33,63 @@ export default function TaskCenterPage() {
   });
 
   const data = query.data;
+  // 列头过滤（服务端）：点击列头的搜索图标选择取值 → 重新查询后端。
+  const filterDropdown = (
+    options: Array<{ value: string; label: string }>,
+    value: string,
+    onPick: (v: string) => void,
+  ) => (
+    <div style={{ padding: 8 }}>
+      <Select
+        autoFocus
+        open
+        allowClear
+        placeholder="全部"
+        style={{ width: 180 }}
+        value={value || undefined}
+        onChange={(v) => onPick((v as string) ?? "")}
+        options={options}
+      />
+    </div>
+  );
+
   const columns: ColumnsType<Task> = [
     {
       title: "类型",
       dataIndex: "type",
-      width: 80,
+      width: 110,
+      filteredValue: taskType ? [taskType] : null,
+      filterIcon: (filtered: boolean) => <SearchOutlined style={{ color: filtered ? "#1677ff" : undefined }} />,
+      filterDropdown: () =>
+        filterDropdown(
+          Object.entries(TASK_TYPE_LABEL).map(([value, label]) => ({ value, label })),
+          taskType,
+          (v) => {
+            setTaskType(v as TaskType | "");
+            setPage(1);
+          },
+        ),
       render: (t: Task["type"]) => <Tag>{TASK_TYPE_LABEL[t] ?? t}</Tag>,
     },
     {
       title: "状态",
       dataIndex: "status",
-      width: 110,
+      width: 140,
+      filteredValue: status ? [status] : null,
+      filterIcon: (filtered: boolean) => <SearchOutlined style={{ color: filtered ? "#1677ff" : undefined }} />,
+      filterDropdown: () =>
+        filterDropdown(
+          Object.entries(TASK_STATUS).map(([value, meta]) => ({ value, label: meta.label })),
+          status,
+          (v) => {
+            setStatus(v as TaskStatus | "");
+            setPage(1);
+          },
+        ),
       render: (s: TaskStatus) => (
         <Tag color={TASK_STATUS[s]?.color}>{TASK_STATUS[s]?.label ?? s}</Tag>
       ),
     },
-    { title: "说明", dataIndex: "input", ellipsis: true },
     {
       title: "目标",
       dataIndex: "target_group_id",
@@ -57,40 +99,28 @@ export default function TaskCenterPage() {
     },
     { title: "审批人", dataIndex: "approver", width: 100, render: (a?: string) => a || "-" },
     { title: "创建", dataIndex: "created_at", width: 130, render: fmtAgo },
+    // 说明放最后一列：内容可能很长，截断 + 悬浮查看全文。
+    {
+      title: "说明",
+      dataIndex: "input",
+      ellipsis: true,
+      render: (text: string) =>
+        text ? (
+          <Tooltip title={text} placement="topLeft">
+            <span>{text}</span>
+          </Tooltip>
+        ) : (
+          "-"
+        ),
+    },
   ];
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+      <div style={{ marginBottom: 12 }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           任务中心
         </Typography.Title>
-        <Select
-          aria-label="类型筛选"
-          placeholder="类型筛选"
-          allowClear
-          style={{ width: 150, marginRight: 8 }}
-          value={taskType || undefined}
-          onChange={(v) => {
-            setTaskType((v as TaskType) ?? "");
-            setPage(1);
-          }}
-          options={Object.entries(TASK_TYPE_LABEL).map(([value, label]) => ({ value, label }))}
-        />
-        <Select
-          placeholder="状态筛选"
-          allowClear
-          style={{ width: 150 }}
-          value={status || undefined}
-          onChange={(v) => {
-            setStatus(v ?? "");
-            setPage(1);
-          }}
-          options={Object.entries(TASK_STATUS).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
-        />
       </div>
       {query.isError && <ErrorState onRetry={() => query.refetch()} />}
       <Card>
