@@ -79,6 +79,11 @@ type Store interface {
 	// filter 的零值字段表示不过滤；page 从 1 开始；pageSize<=0 时返回全量。
 	ListTasks(ctx context.Context, filter TaskFilter, page, pageSize int) (items []Task, total int64, err error)
 
+	// AppendTaskEvent 追加一条任务状态迁移事件（变更效率埋点，best effort 写入）。
+	AppendTaskEvent(ctx context.Context, e *TaskEvent) error
+	// ListTaskEvents 返回 since 之后（含）的任务状态迁移事件，按 id 升序。
+	ListTaskEvents(ctx context.Context, since time.Time) (items []TaskEvent, err error)
+
 	// CreateSession 创建会话。
 	CreateSession(ctx context.Context, s *ChatSession) error
 	// GetSession 查询会话（含消息）。

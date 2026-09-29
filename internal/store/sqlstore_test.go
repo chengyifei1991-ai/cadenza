@@ -681,3 +681,49 @@ func TestTaskBaseYAML(t *testing.T) {
 		}
 	}
 }
+
+// TestTaskEvents 验证任务状态迁移事件（1.1.0-e 埋点）的写入、时间下界过滤与顺序。
+func TestTaskEvents(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	seed := []TaskEvent{
+		{TaskID: "t-a", FromStatus: "", ToStatus: "pending", CreatedAt: base.Add(-2 * time.Hour)},
+		{TaskID: "t-a", FromStatus: "pending", ToStatus: "awaiting_approval", CreatedAt: base.Add(-time.Hour)},
+		// 带小数秒：验证秒级下界不会漏行（与任务/审计同一口径）。
+		{TaskID: "t-a", FromStatus: "awaiting_approval", ToStatus: "applying", CreatedAt: base.Add(500 * time.Millisecond)},
+		{TaskID: "t-a", FromStatus: "applying", ToStatus: "done", CreatedAt: base.Add(30 * time.Second)},
+	}
+	for i := range seed {
+		if err := st.AppendTaskEvent(ctx, &seed[i]); err != nil {
+			t.Fatalf("AppendTaskEvent: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		since time.Time
+		want  int
+	}{
+		{name: "零值返回全部", since: time.Time{}, want: 4},
+		{name: "秒级下界含整秒行", since: base.Add(-time.Hour), want: 3},
+		{name: "秒级下界含带小数秒行", since: base, want: 2},
+		{name: "窗口外为空", since: base.Add(time.Hour), want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			items, err := st.ListTaskEvents(ctx, tc.since)
+			if err != nil {
+				t.Fatalf("ListTaskEvents: %v", err)
+			}
+			if len(items) != tc.want {
+				t.Fatalf("事件数 = %d, want %d", len(items), tc.want)
+			}
+			for i := 1; i < len(items); i++ {
+				if items[i].ID <= items[i-1].ID {
+					t.Errorf("事件应按 id 升序: %+v", []int64{items[i-1].ID, items[i].ID})
+				}
+			}
+		})
+	}
+}

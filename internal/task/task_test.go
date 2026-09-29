@@ -48,7 +48,8 @@ func TestCanTransition(t *testing.T) {
 
 // fakeStore 是最小 Store 实现，仅支撑 Service 测试。
 type fakeStore struct {
-	tasks map[string]*store.Task
+	tasks  map[string]*store.Task
+	events []store.TaskEvent
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{tasks: map[string]*store.Task{}} }
@@ -99,6 +100,15 @@ func (f *fakeStore) GetSession(context.Context, string) (*store.ChatSession, err
 func (f *fakeStore) AppendMessage(context.Context, string, store.ChatMessage) error { return nil }
 
 func (f *fakeStore) SessionExists(context.Context, string) (bool, error) { return true, nil }
+
+func (f *fakeStore) AppendTaskEvent(_ context.Context, e *store.TaskEvent) error {
+	f.events = append(f.events, *e)
+	return nil
+}
+
+func (f *fakeStore) ListTaskEvents(context.Context, time.Time) ([]store.TaskEvent, error) {
+	return f.events, nil
+}
 
 func (f *fakeStore) ListMessages(context.Context, string, int64, int64, int) ([]store.ChatMessage, int64, error) {
 	return nil, 0, nil

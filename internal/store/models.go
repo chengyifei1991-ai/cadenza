@@ -186,6 +186,20 @@ type Task struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TaskEvent 记录一次任务状态迁移（变更效率埋点：审批等待/下发时长/成功率等）。
+type TaskEvent struct {
+	// ID 是自增主键（同秒内排序与分页游标）。
+	ID int64 `json:"id"`
+	// TaskID 是所属任务。
+	TaskID string `json:"task_id"`
+	// FromStatus 是迁移前状态（创建事件为空串）。
+	FromStatus string `json:"from_status"`
+	// ToStatus 是迁移后状态。
+	ToStatus string `json:"to_status"`
+	// CreatedAt 是迁移发生时间。
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ChatMessage 是会话中的一条消息。
 type ChatMessage struct {
 	// ID 是消息在会话内的自增序号（keyset 分页游标）。

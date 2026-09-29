@@ -121,6 +121,7 @@ func (r *Router) apiMux() *http.ServeMux {
 	mux.HandleFunc("/api/v1/collectors/", r.collectorAction)
 	mux.HandleFunc("/api/v1/audit", h.ListAudit)
 	mux.HandleFunc("/api/v1/stats", h.Stats)
+	mux.HandleFunc("/api/v1/stats/ops", h.StatsOps)
 
 	// 未注册的 /api/* 返回 JSON 404（而非 SPA fallback）。
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {

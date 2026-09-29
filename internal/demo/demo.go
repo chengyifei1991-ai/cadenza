@@ -157,6 +157,29 @@ func Seed(ctx context.Context, st store.Store, logger *slog.Logger) error {
 		}
 	}
 
+	// 任务状态迁移事件（1.1.0-e 埋点演示）：让 /api/v1/stats/ops 在演示库即有数值。
+	events := []store.TaskEvent{
+		// tasks[0]：生成中 → 待审批（审批等待计时起点）。
+		{TaskID: tasks[0].ID, FromStatus: "", ToStatus: string(store.TaskStatusPending), CreatedAt: now.Add(-time.Hour)},
+		{TaskID: tasks[0].ID, FromStatus: string(store.TaskStatusPending), ToStatus: string(store.TaskStatusGenerating), CreatedAt: now.Add(-58 * time.Minute)},
+		{TaskID: tasks[0].ID, FromStatus: string(store.TaskStatusGenerating), ToStatus: string(store.TaskStatusValidating), CreatedAt: now.Add(-56 * time.Minute)},
+		{TaskID: tasks[0].ID, FromStatus: string(store.TaskStatusValidating), ToStatus: string(store.TaskStatusAwaitingApproval), CreatedAt: now.Add(-55 * time.Minute)},
+		// tasks[1]：已完结下发（审批等待 + 下发时长各一段）。
+		{TaskID: tasks[1].ID, FromStatus: "", ToStatus: string(store.TaskStatusPending), CreatedAt: now.Add(-3 * time.Hour)},
+		{TaskID: tasks[1].ID, FromStatus: string(store.TaskStatusPending), ToStatus: string(store.TaskStatusAwaitingApproval), CreatedAt: now.Add(-3 * time.Hour)},
+		{TaskID: tasks[1].ID, FromStatus: string(store.TaskStatusAwaitingApproval), ToStatus: string(store.TaskStatusApplying), CreatedAt: now.Add(-179 * time.Minute)},
+		{TaskID: tasks[1].ID, FromStatus: string(store.TaskStatusApplying), ToStatus: string(store.TaskStatusDone), CreatedAt: now.Add(-178 * time.Minute)},
+		// tasks[2]：被拒绝。
+		{TaskID: tasks[2].ID, FromStatus: "", ToStatus: string(store.TaskStatusPending), CreatedAt: now.Add(-2 * time.Hour)},
+		{TaskID: tasks[2].ID, FromStatus: string(store.TaskStatusPending), ToStatus: string(store.TaskStatusAwaitingApproval), CreatedAt: now.Add(-119 * time.Minute)},
+		{TaskID: tasks[2].ID, FromStatus: string(store.TaskStatusAwaitingApproval), ToStatus: string(store.TaskStatusRejected), CreatedAt: now.Add(-100 * time.Minute)},
+	}
+	for i := range events {
+		if err := st.AppendTaskEvent(ctx, &events[i]); err != nil {
+			return fmt.Errorf("demo: 注入任务事件失败: %w", err)
+		}
+	}
+
 	// 审计：动作覆盖生成/审批/下发/拒绝。
 	audit := []store.AuditLog{
 		{Actor: "admin", Action: store.AuditActionApply, Subject: gwUID,

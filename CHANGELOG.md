@@ -26,6 +26,11 @@
 - **前端单测接入 CI 门禁**：新增 typecheck + `vitest run` 步骤；修复 `AssistantPage.send()`
   未捕获拒绝（fire-and-forget 调用产生的 2 处 unhandled rejection，此前 `npm test` 退出码为 1）。
 
+- **变更效率埋点（1.1.0-e）**：新增 `task_events` 表（幂等建表 + 索引），任务状态机在
+  `task.Service` 的每个迁移点落事件（创建/审批/拒绝/状态推进，best effort 不阻塞主流程）；
+  新增 `GET /api/v1/stats/ops?window_days=7`（1~90）：窗口内任务终态分布与**下发成功率**、
+  **审批等待**与**下发时长**的 count/avg/p50/p90、**回滚**次数与平均时长；演示库注入成对的
+  迁移事件，开箱即可看到指标。占位量级访问不产生额外查询（窗口过滤走在同一个索引上）。
 - **任务级 diff 服务端化（1.1.0-d）**：新增 `internal/diff`（stdlib LCS 实现的 unified 行级
   diff，无第三方依赖，大输入自动降级）；`Task.BaseYAML` 基准快照（generate/optimize 落库时取
   目标分组代表实例的生效配置，REST apply 取目标当前生效配置，跨时间可复现）；

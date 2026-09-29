@@ -461,7 +461,34 @@ check_code "无生成配置的任务 diff → 409" 409
 req GET "/api/v1/tasks/no-such-task/diff" --cookie "$CJ"
 check_code "未知任务 diff → 404" 404
 
-section "18. 登出"
+section "18. 变更效率埋点（1.1.0-e）"
+req GET /api/v1/stats/ops --cookie "$CJ"
+check_code "运维效率指标 → 200" 200
+check_contains "含 window_days" '"window_days":7'
+check_contains "含审批等待" '"approval_wait_ms"'
+check_contains "含下发时长" '"dispatch_ms"'
+check_contains "含回滚统计" '"rollback"'
+OPS_WAIT=$(python3 -c "import json;print(json.load(open('$BODY'))['approval_wait_ms']['count'])")
+if [ "${OPS_WAIT:-0}" -ge 1 ]; then pass; else fail "审批等待样本数应≥1（实际 $OPS_WAIT）"; fi
+OPS_DISPATCH=$(python3 -c "import json;print(json.load(open('$BODY'))['dispatch_ms']['count'])")
+if [ "${OPS_DISPATCH:-0}" -ge 1 ]; then pass; else fail "下发时长样本数应≥1（实际 $OPS_DISPATCH）"; fi
+OPS_RATE_OK=$(python3 -c "
+import json
+d=json.load(open('$BODY'))
+r=d['tasks']['success_rate']
+print('yes' if 0.0 <= r <= 1.0 else 'no')")
+if [ "$OPS_RATE_OK" = "yes" ]; then pass; else fail "下发成功率应在 [0,1]"; fi
+
+req GET "/api/v1/stats/ops?window_days=1" --cookie "$CJ"
+check_code "window_days=1 → 200" 200
+req GET "/api/v1/stats/ops?window_days=0" --cookie "$CJ"
+check_code "window_days=0 越界 → 400" 400
+req GET "/api/v1/stats/ops?window_days=91" --cookie "$CJ"
+check_code "window_days=91 越界 → 400" 400
+req GET "/api/v1/stats/ops?window_days=abc" --cookie "$CJ"
+check_code "window_days 非数字 → 400" 400
+
+section "19. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'
   check_code "登出 → 200" 200

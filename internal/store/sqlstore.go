@@ -92,6 +92,15 @@ func (s *sqlStore) initSchema() error {
 			started_at TEXT NOT NULL,
 			finished_at TEXT NOT NULL DEFAULT ''
 		)`,
+		`CREATE TABLE IF NOT EXISTS task_events (
+			id ` + autoInc + `,
+			task_id TEXT NOT NULL,
+			from_status TEXT NOT NULL DEFAULT '',
+			to_status TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_created ON task_events(created_at)`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id ` + autoInc + `,
 			actor TEXT NOT NULL,
@@ -618,6 +627,48 @@ func (s *sqlStore) ListMessages(ctx context.Context, sessionID string, beforeID,
 		}
 	}
 	return out, total, nil
+}
+
+// AppendTaskEvent 追加一条任务状态迁移事件（埋点，best effort）。
+func (s *sqlStore) AppendTaskEvent(ctx context.Context, e *TaskEvent) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO task_events (task_id, from_status, to_status, created_at) VALUES (?, ?, ?, ?)`,
+		e.TaskID, e.FromStatus, e.ToStatus, fmtTime(e.CreatedAt))
+	return err
+}
+
+// ListTaskEvents 返回 since 之后（含）的状态迁移事件，按 id 升序（同一秒内也稳定）。
+// 时间下界与任务/审计过滤同口径：substr(created_at,1,19) 秒级比较。
+func (s *sqlStore) ListTaskEvents(ctx context.Context, since time.Time) ([]TaskEvent, error) {
+	query := `SELECT id, task_id, from_status, to_status, created_at FROM task_events`
+	args := []any{}
+	if !since.IsZero() {
+		query += ` WHERE substr(created_at,1,19) >= ?`
+		args = append(args, secondBound(since))
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]TaskEvent, 0)
+	for rows.Next() {
+		var (
+			e       TaskEvent
+			created string
+		)
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.FromStatus, &e.ToStatus, &created); err != nil {
+			return nil, err
+		}
+		ts, err := parseTime(created)
+		if err != nil {
+			return nil, fmt.Errorf("parse created_at: %w", err)
+		}
+		e.CreatedAt = ts
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。

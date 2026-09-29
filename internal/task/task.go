@@ -39,7 +39,22 @@ func (s *Service) Create(ctx context.Context, t *store.Task) error {
 	if t.Status == "" {
 		t.Status = store.TaskStatusPending
 	}
-	return s.store.CreateTask(ctx, t)
+	if err := s.store.CreateTask(ctx, t); err != nil {
+		return err
+	}
+	// 埋点：创建事件（from 为空）。
+	s.recordEvent(ctx, t.ID, "", string(t.Status))
+	return nil
+}
+
+// recordEvent 追加状态迁移事件（best effort：埋点失败不影响任务主流程）。
+func (s *Service) recordEvent(ctx context.Context, taskID, from, to string) {
+	_ = s.store.AppendTaskEvent(ctx, &store.TaskEvent{
+		TaskID:     taskID,
+		FromStatus: from,
+		ToStatus:   to,
+		CreatedAt:  time.Now().UTC(),
+	})
 }
 
 // Approve 审批通过：仅 awaiting_approval 状态可审批，通过后进入 applying。
@@ -48,6 +63,7 @@ func (s *Service) Approve(ctx context.Context, id, approver string) (*store.Task
 	if err != nil {
 		return nil, err
 	}
+	from := string(t.Status)
 	if err := Transition(t, store.TaskStatusApplying); err != nil {
 		return nil, err
 	}
@@ -55,6 +71,7 @@ func (s *Service) Approve(ctx context.Context, id, approver string) (*store.Task
 	if err := s.store.UpdateTask(ctx, t); err != nil {
 		return nil, err
 	}
+	s.recordEvent(ctx, t.ID, from, string(t.Status))
 	return t, nil
 }
 
@@ -64,6 +81,7 @@ func (s *Service) Reject(ctx context.Context, id, approver, reason string) (*sto
 	if err != nil {
 		return nil, err
 	}
+	from := string(t.Status)
 	if err := Transition(t, store.TaskStatusRejected); err != nil {
 		return nil, err
 	}
@@ -72,6 +90,7 @@ func (s *Service) Reject(ctx context.Context, id, approver, reason string) (*sto
 	if err := s.store.UpdateTask(ctx, t); err != nil {
 		return nil, err
 	}
+	s.recordEvent(ctx, t.ID, from, string(t.Status))
 	return t, nil
 }
 
@@ -81,12 +100,14 @@ func (s *Service) SetStatus(ctx context.Context, id string, to store.TaskStatus)
 	if err != nil {
 		return nil, err
 	}
+	from := string(t.Status)
 	if err := Transition(t, to); err != nil {
 		return nil, err
 	}
 	if err := s.store.UpdateTask(ctx, t); err != nil {
 		return nil, err
 	}
+	s.recordEvent(ctx, t.ID, from, string(t.Status))
 	return t, nil
 }
 
