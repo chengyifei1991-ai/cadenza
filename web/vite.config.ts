@@ -28,5 +28,8 @@ export default defineConfig({
     globals: true,
     css: false,
     include: ["src/**/*.test.{ts,tsx}"],
+    // jsdom + antd 的交互用例在负载下可能逼近默认 5s：放宽到 20s，避免门禁抖动。
+    testTimeout: 20000,
+    hookTimeout: 20000,
   },
 });

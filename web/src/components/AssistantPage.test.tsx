@@ -28,6 +28,14 @@ function stubRoutes(opts: { reply?: string; chatStatus?: number; boundTasks?: un
   const convo: Array<{ q: string; a: string }> = [];
   const replyText = () => opts.reply ?? `已生成配置任务 ${TASK_ID}，等待审批。`;
   const sessionMessages = (id: string) => {
+    if (id === "s-many") {
+      return Array.from({ length: 60 }, (_, i) => ({
+        id: i + 1,
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: `批量消息 ${i + 1}`,
+        created_at: iso,
+      }));
+    }
     const msgs: Array<{ id: number; role: string; content: string; created_at: string }> = [
       { id: 1, role: "user", content: "历史会话问题", created_at: iso },
     ];
@@ -58,11 +66,15 @@ function stubRoutes(opts: { reply?: string; chatStatus?: number; boundTasks?: un
       const items = opts.boundTasks ?? [];
       return json({ items, total: items.length, page: 1, page_size: 20 });
     }
-    // 会话消息分页端点（1.1.0-c）：与会话详情同源数据，返回 items/total 信封。
+    // 会话消息分页端点（1.1.0-c / F-12）：实现尾部窗口 + before_id 前翻语义。
     const msgMatch = url.match(/\/api\/v1\/sessions\/([\w-]+)\/messages/);
     if (method === "GET" && msgMatch) {
-      const msgs = sessionMessages(msgMatch[1]);
-      return json({ items: msgs, total: msgs.length });
+      const all = sessionMessages(msgMatch[1]);
+      const params = new URL(url, "http://localhost").searchParams;
+      const before = Number(params.get("before_id") ?? 0);
+      const limit = Number(params.get("limit") ?? 0) || 50;
+      const scoped = before > 0 ? all.filter((m) => m.id < before) : all;
+      return json({ items: scoped.slice(-limit), total: all.length });
     }
     const sessMatch = url.match(/\/api\/v1\/sessions\/([\w-]+)$/);
     if (method === "GET" && sessMatch) {
@@ -142,6 +154,23 @@ describe("AssistantPage", () => {
     const retry = screen.getByRole("button", { name: /重 试|重试/ });
     await user.click(retry);
     await waitFor(() => expect(routes.chat).toBe(2));
+  });
+
+  it("长会话按 keyset 向前翻页（F-12）", async () => {
+    stubRoutes();
+    renderApp(
+      <Routes>
+        <Route path="/assistant" element={<AssistantPage />} />
+      </Routes>,
+      "/assistant?session=s-many",
+      makeQueryClient(),
+    );
+    // 尾部窗口 50 条 → 显示"已显示 50/60"
+    expect(await screen.findByText(/已显示 50\/60 条/)).toBeInTheDocument();
+    // 以最早一条 id 为游标再取 50 条（实际补足 10 条）
+    await userEvent.click(screen.getByRole("button", { name: /加载更早/ }));
+    await waitFor(() => expect(screen.getByText("批量消息 1")).toBeInTheDocument());
+    expect(await screen.findByText("批量消息 60")).toBeInTheDocument();
   });
 
   it("空会话示例点击即发送", async () => {

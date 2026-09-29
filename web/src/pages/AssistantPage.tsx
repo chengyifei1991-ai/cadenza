@@ -49,12 +49,13 @@ export default function AssistantPage() {
     queryFn: () => api.listSessions({ page: 1, page_size: 20 }),
   });
 
-  // 会话消息走 keyset 分页端点（1.1.0-c）：默认取最近 50 条，长会话避免全量拉取。
-  // 上限 100 条（后端 limit 上限），超出提示"仅显示最近 100 条"。
-  const [msgLimit, setMsgLimit] = useState(50);
+  // 会话消息走 keyset 分页端点（1.1.0-c / F-12）：尾部窗口 + before_id 向前累积，
+  // 不设总量上限（长会话按需翻页，每次 50 条）。
+  const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const history = useQuery({
-    queryKey: ["session-messages", currentId, msgLimit],
-    queryFn: () => api.listSessionMessages(currentId as string, { limit: msgLimit }),
+    queryKey: ["session-messages", currentId],
+    queryFn: () => api.listSessionMessages(currentId as string, { limit: 50 }),
     enabled: Boolean(currentId),
   });
 
@@ -64,10 +65,10 @@ export default function AssistantPage() {
     queryFn: () => api.listSessionTasks(currentId as string),
     enabled: Boolean(currentId),
   });
-  const messages: ChatMessage[] = history.data?.items ?? [];
+  const tailMessages: ChatMessage[] = history.data?.items ?? [];
+  const messages: ChatMessage[] = [...olderMessages, ...tailMessages];
   const totalMessages = history.data?.total ?? messages.length;
   const hasOlder = totalMessages > messages.length;
-  const atLimit = msgLimit >= 100;
   // 合并：会话硬绑定任务在前，文本正则命中且未绑定的任务在后（兼容历史会话）。
   const boundList: Task[] = boundTasks.data?.items ?? [];
   const boundIds = new Set(boundList.map((t) => t.id));
@@ -131,6 +132,24 @@ export default function AssistantPage() {
     },
   });
 
+  // loadOlder 以"当前最早一条消息 id"为游标向前翻页并累积（keyset，无总量上限）。
+  const loadOlder = async () => {
+    if (!currentId || loadingOlder) return;
+    const oldest = messages[0]?.id;
+    if (!oldest) return;
+    setLoadingOlder(true);
+    try {
+      const page = await api.listSessionMessages(currentId, { before_id: oldest, limit: 50 });
+      if (page.items.length > 0) {
+        setOlderMessages((prev) => [...page.items, ...prev]);
+      }
+    } catch {
+      message.error("加载更早消息失败，请重试");
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
   const send = async (raw?: string) => {
     const text = (raw ?? input).trim();
     if (!text || sending) return;
@@ -151,12 +170,13 @@ export default function AssistantPage() {
   const pickSession = async (id: string) => {
     setCurrentId(id);
     setTracked([]);
-    setMsgLimit(50); // 切换会话重置分页窗口
+    setOlderMessages([]); // 切换会话重置已加载的历史页
   };
   const newSession = async () => {
     const resp = await api.createSession();
     setCurrentId(resp.session_id);
     setTracked([]);
+    setOlderMessages([]);
     await qc.invalidateQueries({ queryKey: ["sessions"] });
   };
 
@@ -245,10 +265,10 @@ export default function AssistantPage() {
                     <Button
                       size="small"
                       type="link"
-                      disabled={atLimit}
-                      onClick={() => setMsgLimit((n) => Math.min(100, n + 50))}
+                      loading={loadingOlder}
+                      onClick={() => void loadOlder()}
                     >
-                      {atLimit ? "仅显示最近 100 条" : `加载更早的消息（共 ${totalMessages} 条）`}
+                      {`加载更早的消息（已显示 ${messages.length}/${totalMessages} 条）`}
                     </Button>
                   </div>
                 )}

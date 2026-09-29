@@ -80,6 +80,8 @@ export interface AuditLog {
 }
 
 export interface ChatMessage {
+  /** 会话内自增序号（keyset 分页游标；服务端 1.1.0-c 起返回）。 */
+  id?: number;
   role: "user" | "assistant";
   content: string;
   created_at: string;
