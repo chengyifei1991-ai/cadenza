@@ -15,10 +15,11 @@
 |---|---|
 | OpAMP Server | `/v1/opamp`，HTTP + WebSocket 双传输，接入认证、状态接收、配置主动下发 |
 | 配置校验 | 两级：yaml.v3 结构校验 + `otelcol-contrib validate`（锁定 **v0.156.0**） |
+| 配置版本来源 | 默认**内置**版本快照 + 回滚；可选 **GitOps 模式**（`CONFIG_SOURCE=git`：使用方本地 git 仓库为版本权威，Cadenza **只读**读取、按 commit 下发/回退并留溯源，不提交不改动仓库） |
 | 对话生成配置 | 自然语言 → LLM 生成 YAML → 校验 → 审批 → 下发 |
 | 自动优化配置 | 基于 Collector 上报状态分析并提议优化方案 |
 | 版本升级 | `PackagesAvailable` 协议能力（Beta），任务化审批 |
-| MCP Server | `/mcp`（streamable HTTP），9 个工具，外部 LLM/IDE 可直接调用 |
+| MCP Server | `/mcp`（streamable HTTP），11 个工具，外部 LLM/IDE 可直接调用 |
 | REST API | `/api/v1/*`，Web 前端使用 |
 | 审批闭环 | 会话 → 任务 → 审批 → 下发，全部审计留痕 |
 | LLM 稳定性 | 超时 → 指数退避重试 → failover 多模型切换 → 熔断 → 缓存 → 故障隔离 |
@@ -60,8 +61,8 @@ go build -o bin/cadenza ./cmd/server
 # 生成管理员口令哈希（Web 登录用，安全默认值要求设置）
 export WEB_ADMIN_PASSWORD_HASH=$(htpasswd -bnBC 10 "" '你的密码' | tr -d ':\n')
 
-# 运行（最小配置：SQLite + 任意 LLM key + Web 登录）
-export LLM_API_KEY=sk-xxx
+# 运行（最小配置：SQLite + 使用方自备 LLM key + Web 登录）
+export LLM_API_KEY=sk-xxx              # 由使用方自备：启动时必须提供，缺失拒绝启动
 export DB_DRIVER=sqlite
 export DB_SQLITE_PATH=./data/opamp.db   # 首次运行请先 mkdir -p data
 export HTTP_ADDR=:8080
@@ -96,8 +97,14 @@ export DEMO_MODE=true                   # 可选：空库注入演示数据（�
 | `HTTP_ADDR` | `:8080` | 主 HTTP 监听地址 |
 | `DB_DRIVER` / `DB_DSN` / `DB_SQLITE_PATH` | `sqlite` | 存储：`mysql`（生产）或 `sqlite`（开发） |
 | `OPAMP_AUTH_TOKEN` | 空（放行） | Collector 接入认证 Bearer token |
+| `MCP_AUTH_TOKEN` | 空（不启用） | `/mcp` 端点 Bearer token；**公网部署必须配置**（为空时启动告警） |
+| `CONFIG_SOURCE` | `builtin` | 配置版本来源：`builtin`（内置版本快照 + 回滚）或 `git`（GitOps 可选模式） |
+| `GIT_REPO_DIR` | 空 | GitOps 模式必填：本地 git 仓库路径（**只读**，缺省则启动 fail-closed） |
+| `GIT_CONFIG_PATHSPEC` | 空 | GitOps 模式必填：仓库内配置路径模板，支持 `{uid}` / `%s` 占位（如 `collectors/{uid}.yaml`） |
+| `GIT_REF` | `HEAD` | GitOps 默认读取的 ref（分支/tag/commit） |
 | `OTELCOL_BIN` / `STRICT_VALIDATE` | `/usr/local/bin/otelcol-contrib` / `false` | otelcol-contrib v0.156.0 深度校验 |
-| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | DeepSeek | 主模型（OpenAI 兼容） |
+| `LLM_API_KEY` | **必填，无默认** | **使用方自备**：启动时以环境变量提供；程序不内置任何 key，缺失（且未配 `LLM_BACKUP_API_KEY`）**拒绝启动** |
+| `LLM_BASE_URL` / `LLM_MODEL` | `https://api.deepseek.com` / `deepseek-chat` | 主模型（任意 OpenAI 兼容接口：DeepSeek / Ollama / vLLM 等） |
 | `LLM_BACKUP_*` | 空 | 备用模型（failover 第二候选） |
 | `LLM_LOCAL_*` | 空 | 本地兜底（第三候选，如 Ollama） |
 | `LLM_TIMEOUT` / `LLM_RETRY` / `LLM_CIRCUIT_*` / `LLM_CACHE_TTL` | 60s / 3 / 5 / 30s / 10m | LLM 稳定性参数 |
@@ -137,6 +144,13 @@ WebSocket 连接支持配置主动即时推送；HTTP 拉取模式下，待下�
 | `upgrade_collector` | 创建版本升级任务（Beta） |
 | `approve_task` / `reject_task` | 审批 / 拒绝 |
 | `list_pending_tasks` | 列出待审批任务 |
+| `get_task_diff` | 获取任务的配置差异（基准 vs 生成，服务端 unified diff） |
+| `get_git_config` | （GitOps）读取 git 仓库中该 Collector 的配置 |
+
+> ⚠️ **配置原文含敏感值**：`/mcp`、`/api/v1/collectors/{uid}` 与 `/api/v1/tasks/{id}/diff`
+> 会返回配置（含基准快照）原文，其中可能包含 `Authorization` 头、Token 等敏感内容
+> （Agent 上报值经 otelcol 脱敏，但服务端提交的原文不脱敏）。生产部署请务必启用
+> `MCP_AUTH_TOKEN` 并限制管理面访问。
 
 MCP 端点：`http://<host>:8080/mcp`（streamable HTTP，`Accept: application/json, text/event-stream`）。
 

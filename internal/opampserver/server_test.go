@@ -5,6 +5,7 @@ package opampserver
 
 import (
 	"context"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"testing"
@@ -103,33 +104,64 @@ func TestPushConfigOfflineQueues(t *testing.T) {
 	}
 }
 
-// TestCollectorFromMessage 验证 AgentToServer 状态提取。
+// TestCollectorFromMessage 验证 AgentToServer 状态提取与**健康状态沿用语义**。
+//
+// 回归缺陷：OpAMP 客户端只在健康变化时携带 health，心跳/配置上报消息不带；
+// 旧实现把"未上报"当 unknown，导致 healthy 被紧随其后的心跳冲掉
+// （实测：collector 活着、端口在听，页面却显示"未知"）。
 func TestCollectorFromMessage(t *testing.T) {
 	srv := newTestServer(t, "")
-	msg := agentToServerMsg("uid-1", "node-1", "0.156.0", true)
-	c := srv.collectorFromMessage("uid-1", msg)
+	const uid = "uid-1"
+
+	// 1. 从未收到健康信号（无历史行）→ unknown。
+	msg := agentToServerMsg(uid, "node-1", "0.156.0", true)
+	msg.Health = nil
+	c := srv.collectorFromMessage(uid, msg)
 	if c.Hostname != "node-1" || c.Version != "0.156.0" {
 		t.Errorf("hostname/version 提取失败: %+v", c)
-	}
-	if c.Status != store.CollectorStatusHealthy {
-		t.Errorf("status = %q, want healthy", c.Status)
-	}
-
-	// 未上报 health 时状态应为 unknown。
-	msg.Health = nil
-	c = srv.collectorFromMessage("uid-1", msg)
-	if c.Status != store.CollectorStatusUnknown {
-		t.Errorf("status = %q, want unknown（health 未上报）", c.Status)
 	}
 	if c.EffectiveConfig == "" {
 		t.Errorf("effective config 未提取")
 	}
+	if c.Status != store.CollectorStatusUnknown {
+		t.Errorf("无历史且未上报 health: status = %q, want unknown", c.Status)
+	}
 
-	// 不健康状态（前面已置 nil，需重新赋值）。
+	// 2. 明确上报 healthy 后落库（模拟真实 onMessage 落库）。
+	msg.Health = &protobufs.ComponentHealth{Healthy: true}
+	c = srv.collectorFromMessage(uid, msg)
+	if c.Status != store.CollectorStatusHealthy {
+		t.Fatalf("status = %q, want healthy", c.Status)
+	}
+	srv.reg.Upsert(c, nil)
+
+	// 3. 后续消息不带 health（心跳/effective 上报）→ 保持 healthy（本次回归点）。
+	msg.Health = nil
+	c = srv.collectorFromMessage(uid, msg)
+	if c.Status != store.CollectorStatusHealthy {
+		t.Errorf("未上报 health 应沿用上次状态: status = %q, want healthy", c.Status)
+	}
+
+	// 4. 明确上报不健康 → unhealthy；随后不带 health 仍沿用 unhealthy。
 	msg.Health = &protobufs.ComponentHealth{Healthy: false}
-	c = srv.collectorFromMessage("uid-1", msg)
+	c = srv.collectorFromMessage(uid, msg)
 	if c.Status != store.CollectorStatusUnhealthy {
-		t.Errorf("status = %q, want unhealthy", c.Status)
+		t.Fatalf("status = %q, want unhealthy", c.Status)
+	}
+	srv.reg.Upsert(c, nil)
+	msg.Health = nil
+	c = srv.collectorFromMessage(uid, msg)
+	if c.Status != store.CollectorStatusUnhealthy {
+		t.Errorf("未上报 health 应沿用 unhealthy: status = %q", c.Status)
+	}
+
+	// 5. 此前判定离线后重新连上（无 health）→ unknown（在线但健康未知），而非停留 offline。
+	offline := *c
+	offline.Status = store.CollectorStatusOffline
+	srv.reg.Upsert(&offline, nil)
+	c = srv.collectorFromMessage(uid, msg)
+	if c.Status != store.CollectorStatusUnknown {
+		t.Errorf("离线后重连未上报 health: status = %q, want unknown", c.Status)
 	}
 }
 
@@ -156,4 +188,58 @@ func agentToServerMsg(uid, hostname, version string, healthy bool) *protobufs.Ag
 		},
 	}
 	return msg
+}
+
+// TestMetadataSurvivesRestart 回归：服务端重启（注册表为空）后收到不含 AgentDescription 的
+// 增量状态消息时，必须沿用存储中的 hostname/version，不得被空值覆盖；
+// 同时应回置 ReportFullState 让 Agent 重发完整状态。
+func TestMetadataSurvivesRestart(t *testing.T) {
+	srv := newTestServer(t, "")
+	ctx := context.Background()
+	const uid = "55555555555555555555555555555555"
+
+	// 模拟上一代服务写入的持久化行（hostname/version 已知，注册表为空）。
+	if err := srv.st.UpsertCollector(ctx, &store.Collector{
+		InstanceUID: uid, Hostname: "node-x", Version: "0.156.0",
+		LastSeenAt: time.Now().UTC(), Status: store.CollectorStatusHealthy,
+		EffectiveConfig: "receivers: {}",
+	}); err != nil {
+		t.Fatalf("UpsertCollector: %v", err)
+	}
+	if _, ok := srv.reg.Get(uid); ok {
+		t.Fatal("前置条件：注册表应为空（模拟重启）")
+	}
+
+	// 增量消息：无 AgentDescription、无 EffectiveConfig，仅健康上报。
+	msg := &protobufs.AgentToServer{
+		InstanceUid: mustHex(t, uid),
+		Health:      &protobufs.ComponentHealth{Healthy: true},
+	}
+	resp := srv.onMessage(ctx, nil, msg)
+	if resp == nil {
+		t.Fatal("onMessage 返回 nil")
+	}
+	got, ok := srv.reg.Get(uid)
+	if !ok {
+		t.Fatal("注册表中应有记录")
+	}
+	if got.Hostname != "node-x" || got.Version != "0.156.0" {
+		t.Errorf("元数据被覆盖: hostname=%q version=%q（应从存储沿用）", got.Hostname, got.Version)
+	}
+	if got.EffectiveConfig != "receivers: {}" {
+		t.Errorf("effective config 应沿用存储值，实际 %q", got.EffectiveConfig)
+	}
+	if resp.Flags&uint64(protobufs.ServerToAgentFlags_ServerToAgentFlags_ReportFullState) == 0 {
+		t.Errorf("元数据缺失时应置 ReportFullState 请求全量状态，实际 flags=%d", resp.Flags)
+	}
+}
+
+// mustHex 解析 16 字节 instance_uid 的十六进制串。
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("hex.DecodeString(%q): %v", s, err)
+	}
+	return b
 }

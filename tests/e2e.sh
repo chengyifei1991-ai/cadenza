@@ -352,7 +352,7 @@ check_code "授权 Origin 预检 → 204" 204
 ACAO2=$(hdr -H "Origin: $CORS_ORIGIN" -b "$CJ" "$BASE/api/v1/collectors")
 if [ -n "$ACAO2" ]; then pass; else fail "授权 Origin 应回写 CORS 头"; fi
 
-section "15. M2 契约补强（编辑器/回滚闭环）"
+section "14. M2 契约补强（编辑器/回滚闭环）"
 # 1) 编辑器提交的 note 进入任务 input（详情可回读）；generated_yaml 随任务保留
 req GET "/api/v1/tasks/$APPLY_ID" --cookie "$CJ"
 check_contains "apply 任务的变更说明含 note" "e2e 提交"
@@ -366,7 +366,129 @@ else
   fail "回滚后 effective_config 应被更新且不含 memory_limiter（实际: $(printf '%s' "$EFFECT" | head -c 80 | tr '\n' ' ')）"
 fi
 
-section "14. 登出"
+section "15. 任务↔会话绑定（1.1.0-b）"
+req POST /api/v1/sessions --cookie "$CJ" --data '{}'
+check_code "创建会话 → 200" 200
+SESS_ID=$(jget "['session_id']")
+SESS_PAYLOAD=$(python3 - "$SESS_ID" "$VALID_YAML" <<'PY'
+import json, sys
+print(json.dumps({"collector_instance_uid": "demo-gateway-1", "yaml": sys.argv[2],
+                  "note": "e2e 会话绑定", "session_id": sys.argv[1]}))
+PY
+)
+req POST /api/v1/tasks/apply --cookie "$CJ" --data "$SESS_PAYLOAD"
+check_code "带 session_id 提交 apply → 201" 201
+check_json_eq "['session_id']" "$SESS_ID" "任务回写 session_id"
+SESS_TASK_ID=$(jget "['id']")
+
+req GET "/api/v1/sessions/$SESS_ID/tasks?page=1&page_size=10" --cookie "$CJ"
+check_code "会话任务列表 → 200" 200
+check_json_eq "['total']" "1" "会话任务数=1"
+check_json_eq "['items'][0]['id']" "$SESS_TASK_ID" "会话任务即刚提交的任务"
+
+req GET "/api/v1/tasks?session_id=$SESS_ID&page=1&page_size=10" --cookie "$CJ"
+check_json_eq "['total']" "1" "任务列表按 session_id 过滤命中 1 条"
+
+req GET "/api/v1/sessions/no-such-session/tasks" --cookie "$CJ"
+check_code "未知会话任务列表 → 404" 404
+
+req GET "/api/v1/tasks?since=not-a-time" --cookie "$CJ"
+check_code "非法 since 参数 → 400" 400
+
+section "16. 审计筛选与会话消息分页（1.1.0-c）"
+req GET "/api/v1/audit?actor=admin&page=1&page_size=10" --cookie "$CJ"
+check_code "审计按 actor 过滤 → 200" 200
+ADMIN_TOTAL=$(python3 -c "import json;print(json.load(open('$BODY'))['total'])")
+if [ "${ADMIN_TOTAL:-0}" -ge 1 ]; then pass; else fail "actor=admin 审计应至少 1 条（实际 $ADMIN_TOTAL）"; fi
+
+req GET "/api/v1/audit?action=bogus" --cookie "$CJ"
+check_code "审计非法 action 枚举 → 400" 400
+req GET "/api/v1/audit?since=abc" --cookie "$CJ"
+check_code "审计 since 非数字（id 游标语义）→ 400" 400
+req GET "/api/v1/audit?from=not-a-time" --cookie "$CJ"
+check_code "审计非法 from 时间 → 400" 400
+req GET "/api/v1/audit?action=apply&page=1&page_size=10" --cookie "$CJ"
+check_code "审计按 action 过滤 → 200" 200
+
+# 演示会话含历史消息：校验尾部窗口取到最近 1 条且总数一致。
+DEMO_SESS=$(curl -s -b "$CJ" "$BASE/api/v1/sessions?page=1&page_size=1" | python3 -c "import sys,json;print(json.load(sys.stdin)['items'][0]['id'])")
+req GET "/api/v1/sessions/$DEMO_SESS/messages?limit=1" --cookie "$CJ"
+check_code "会话消息尾部窗口 → 200" 200
+MSG_TOTAL=$(python3 -c "import json;print(json.load(open('$BODY'))['total'])")
+MSG_ITEMS=$(python3 -c "import json;print(len(json.load(open('$BODY'))['items']))")
+if [ "${MSG_ITEMS:-0}" = "1" ] && [ "${MSG_TOTAL:-0}" -ge 1 ]; then pass; else fail "消息窗口应 1 条/总数≥1（实际 items=$MSG_ITEMS total=$MSG_TOTAL）"; fi
+# 空会话（第 16 节新建、无对话）→ 0 条，且会话本身存在。
+req GET "/api/v1/sessions/$SESS_ID/messages?limit=5" --cookie "$CJ"
+check_code "空会话消息 → 200" 200
+check_json_eq "['total']" "0" "空会话消息总数=0"
+req GET "/api/v1/sessions/$SESS_ID/messages?limit=0" --cookie "$CJ"
+check_code "消息 limit=0 越界 → 400" 400
+req GET "/api/v1/sessions/no-such-session/messages" --cookie "$CJ"
+check_code "未知会话消息 → 404" 404
+
+section "17. 任务级 diff 服务端化（1.1.0-d）"
+# 第 15 节的 apply 任务：目标 demo-gateway-1 有生效配置 → 应带基准快照（内容相同则 diff 为空）。
+req GET "/api/v1/tasks/$SESS_TASK_ID/diff" --cookie "$CJ"
+check_code "apply 任务 diff → 200" 200
+check_json_eq "['has_base']" "True" "apply 任务含基准快照"
+check_contains "diff 端点返回 generated_yaml" '"generated_yaml"'
+
+# 另造一个与基准确有差异的任务：在基准配置上新增 processors.batch。
+DIFF_YAML=$(python3 - "$VALID_YAML" <<'PY'
+import sys
+print(sys.argv[1] + "processors:\n  batch:\n    timeout: 5s\n")
+PY
+)
+DIFF_PAYLOAD=$(python3 - "$DIFF_YAML" <<'PY'
+import json, sys
+print(json.dumps({"collector_instance_uid": "demo-gateway-1", "yaml": sys.argv[1], "note": "e2e diff 用例"}))
+PY
+)
+req POST /api/v1/tasks/apply --cookie "$CJ" --data "$DIFF_PAYLOAD"
+check_code "提交有差异的 apply → 201" 201
+DIFF_TASK_ID=$(jget "['id']")
+req GET "/api/v1/tasks/$DIFF_TASK_ID/diff" --cookie "$CJ"
+check_code "有差异任务 diff → 200" 200
+check_contains "diff 为 unified 格式（文件头）" "+++ b"
+check_contains "diff 含变更块" "@@ -"
+check_contains "diff 含新增行" "+    timeout: 5s"
+DIFF_LEN=$(python3 -c "import json;print(len(json.load(open('$BODY'))['diff']))")
+if [ "${DIFF_LEN:-0}" -gt 0 ]; then pass; else fail "diff 内容为空（该任务与基准应有差异）"; fi
+
+# 回滚任务无生成配置 → 409（语义：无可比较内容）；未知任务 → 404。
+req GET "/api/v1/tasks/$RB_ID/diff" --cookie "$CJ"
+check_code "无生成配置的任务 diff → 409" 409
+req GET "/api/v1/tasks/no-such-task/diff" --cookie "$CJ"
+check_code "未知任务 diff → 404" 404
+
+section "18. 变更效率埋点（1.1.0-e）"
+req GET /api/v1/stats/ops --cookie "$CJ"
+check_code "运维效率指标 → 200" 200
+check_contains "含 window_days" '"window_days":7'
+check_contains "含审批等待" '"approval_wait_ms"'
+check_contains "含下发时长" '"dispatch_ms"'
+check_contains "含回滚统计" '"rollback"'
+OPS_WAIT=$(python3 -c "import json;print(json.load(open('$BODY'))['approval_wait_ms']['count'])")
+if [ "${OPS_WAIT:-0}" -ge 1 ]; then pass; else fail "审批等待样本数应≥1（实际 $OPS_WAIT）"; fi
+OPS_DISPATCH=$(python3 -c "import json;print(json.load(open('$BODY'))['dispatch_ms']['count'])")
+if [ "${OPS_DISPATCH:-0}" -ge 1 ]; then pass; else fail "下发时长样本数应≥1（实际 $OPS_DISPATCH）"; fi
+OPS_RATE_OK=$(python3 -c "
+import json
+d=json.load(open('$BODY'))
+r=d['tasks']['success_rate']
+print('yes' if 0.0 <= r <= 1.0 else 'no')")
+if [ "$OPS_RATE_OK" = "yes" ]; then pass; else fail "下发成功率应在 [0,1]"; fi
+
+req GET "/api/v1/stats/ops?window_days=1" --cookie "$CJ"
+check_code "window_days=1 → 200" 200
+req GET "/api/v1/stats/ops?window_days=0" --cookie "$CJ"
+check_code "window_days=0 越界 → 400" 400
+req GET "/api/v1/stats/ops?window_days=91" --cookie "$CJ"
+check_code "window_days=91 越界 → 400" 400
+req GET "/api/v1/stats/ops?window_days=abc" --cookie "$CJ"
+check_code "window_days 非数字 → 400" 400
+
+section "19. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'
   check_code "登出 → 200" 200

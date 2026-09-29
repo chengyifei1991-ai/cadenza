@@ -26,6 +26,7 @@ import type { TaskStatus, TaskType } from "../api/types";
 import { TASK_STATUS, TASK_TYPE_LABEL } from "../lib/status";
 import { fmtDateTime } from "../lib/time";
 import DiffView from "../components/DiffView";
+import { parseUnified } from "../lib/diff";
 
 const TERMINAL: TaskStatus[] = ["done", "rejected", "failed"];
 
@@ -82,6 +83,19 @@ export default function TaskDetailPage() {
     },
   });
 
+  // 服务端 diff（1.1.0-d）优先：分组目标任务也有基准，且 REST/MCP 与 UI 同一口径。
+  const serverDiff = useQuery({
+    queryKey: ["task-diff", id],
+    queryFn: () => api.getTaskDiff(id),
+    enabled: Boolean(id) && Boolean(t?.generated_yaml),
+    retry: false,
+  });
+  const parsedServerDiff = useMemo(
+    () => (serverDiff.data?.diff ? parseUnified(serverDiff.data.diff) : null),
+    [serverDiff.data],
+  );
+
+  // 回退：旧路径——目标为单实例时取其实时生效配置在前端本地比对。
   const diff = useMemo(() => {
     if (!t) return null;
     const next = t.generated_yaml;
@@ -142,6 +156,28 @@ export default function TaskDetailPage() {
           {t.rollback_version_id ? (
             <Descriptions.Item label="回滚目标">版本 #{t.rollback_version_id}</Descriptions.Item>
           ) : null}
+          {t.git_commit && (
+            <Descriptions.Item label="Git 溯源">
+              <Typography.Text code>{t.git_commit.slice(0, 8)}</Typography.Text>
+              {t.git_path && (
+                <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                  {t.git_path}
+                </Typography.Text>
+              )}
+              {t.git_ref && t.git_ref !== t.git_commit && (
+                <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                  ref: {t.git_ref}
+                </Typography.Text>
+              )}
+            </Descriptions.Item>
+          )}
+          {t.session_id && (
+            <Descriptions.Item label="所属会话">
+              <Link to={`/assistant?session=${encodeURIComponent(t.session_id)}`}>
+                {t.session_id.slice(0, 8)}…
+              </Link>
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label="创建时间">{fmtDateTime(t.created_at)}</Descriptions.Item>
           <Descriptions.Item label="更新时间">{fmtDateTime(t.updated_at)}</Descriptions.Item>
         </Descriptions>
@@ -151,7 +187,18 @@ export default function TaskDetailPage() {
         </Typography.Paragraph>
       </Card>
 
-      {diff ? (
+      {parsedServerDiff ? (
+        <Card
+          title={
+            serverDiff.data?.has_base
+              ? "变更内容（服务端 diff：基准 vs 生成）"
+              : "变更内容（无基准，以下为生成配置的行视图）"
+          }
+          style={{ marginBottom: 16 }}
+        >
+          <DiffView result={parsedServerDiff} maxLines={300} height={380} />
+        </Card>
+      ) : diff ? (
         <Card title="变更内容（与目标当前生效配置对比）" style={{ marginBottom: 16 }}>
           <DiffView oldText={diff.oldText} newText={diff.newText} maxLines={300} height={380} />
         </Card>

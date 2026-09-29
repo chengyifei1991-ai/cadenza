@@ -17,6 +17,9 @@ import (
 	"time"
 
 	"github.com/chengyifei1991-ai/cadenza/internal/agent"
+	"github.com/chengyifei1991-ai/cadenza/internal/diff"
+	"github.com/chengyifei1991-ai/cadenza/internal/gitsource"
+	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/chengyifei1991-ai/cadenza/internal/task"
 	"github.com/chengyifei1991-ai/cadenza/internal/validator"
@@ -74,11 +77,29 @@ type Handlers struct {
 	orch   *agent.Orchestrator
 	deps   *agent.Deps
 	logger *slog.Logger
+	// git 是 GitOps 可选模式的本地仓库只读访问器；nil 表示内置模式。
+	git *gitsource.Repo
+	// configSource 是配置版本来源（builtin/git），随 /system/info 下发。
+	configSource string
 }
 
 // NewHandlers 创建 REST handlers。
-func NewHandlers(st store.Store, tasks *task.Service, orch *agent.Orchestrator, deps *agent.Deps, logger *slog.Logger) *Handlers {
-	return &Handlers{store: st, tasks: tasks, orch: orch, deps: deps, logger: logger}
+// git 为 nil（内置模式）时，/api/v1/git/* 与 apply 的 git_ref 会返回明确的"未启用"错误。
+func NewHandlers(st store.Store, tasks *task.Service, orch *agent.Orchestrator, deps *agent.Deps,
+	logger *slog.Logger, git *gitsource.Repo, configSource string) *Handlers {
+	if configSource == "" {
+		configSource = "builtin"
+	}
+	return &Handlers{store: st, tasks: tasks, orch: orch, deps: deps, logger: logger,
+		git: git, configSource: configSource}
+}
+
+// gitRepo 返回 GitOps 模式下的仓库访问器；未启用时返回 false。
+func (h *Handlers) gitRepo() (*gitsource.Repo, bool) {
+	if h.git == nil || h.configSource != "git" {
+		return nil, false
+	}
+	return h.git, true
 }
 
 // --- 会话 ---
@@ -159,21 +180,25 @@ func (h *Handlers) resolveSession(ctx context.Context, sessionID string) (*store
 
 // --- 任务 ---
 
-// ListTasks 处理 GET /api/v1/tasks?status=&page=&page_size=。
+// ListTasks 处理 GET /api/v1/tasks?status=&type=&target=&session_id=&since=&until=&page=&page_size=。
 // 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。
 func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
 		return
 	}
-	status := store.TaskStatus(r.URL.Query().Get("status"))
+	filter, err := taskFilterFromQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	page, pageSize, enabled, err := pageParams(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if enabled {
-		items, total, perr := h.store.ListTasks(r.Context(), status, page, pageSize)
+		items, total, perr := h.store.ListTasks(r.Context(), filter, page, pageSize)
 		if perr != nil {
 			writeError(w, http.StatusInternalServerError, "查询任务失败")
 			return
@@ -181,12 +206,81 @@ func (h *Handlers) ListTasks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pageResponse[store.Task]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
-	tasks, _, err := h.store.ListTasks(r.Context(), status, 0, 0)
+	tasks, _, err := h.store.ListTasks(r.Context(), filter, 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询任务失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, tasks)
+}
+
+// taskFilterFromQuery 解析任务列表过滤参数（全部可选，零值=不过滤）。
+func taskFilterFromQuery(r *http.Request) (store.TaskFilter, error) {
+	q := r.URL.Query()
+	status := strings.TrimSpace(q.Get("status"))
+	taskType := strings.TrimSpace(q.Get("type"))
+	if !store.IsValidTaskStatus(status) {
+		return store.TaskFilter{}, fmt.Errorf("status 取值非法（合法值：%s）", strings.Join(store.TaskStatuses(), "/"))
+	}
+	if !store.IsValidTaskType(taskType) {
+		return store.TaskFilter{}, fmt.Errorf("type 取值非法（合法值：%s）", strings.Join(store.TaskTypes(), "/"))
+	}
+	f := store.TaskFilter{
+		Status:    store.TaskStatus(status),
+		Type:      store.TaskType(taskType),
+		Target:    strings.TrimSpace(q.Get("target")),
+		SessionID: strings.TrimSpace(q.Get("session_id")),
+	}
+	var err error
+	if f.Since, err = parseTimeParam(q.Get("since")); err != nil {
+		return f, fmt.Errorf("since 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	if f.Until, err = parseTimeParam(q.Get("until")); err != nil {
+		return f, fmt.Errorf("until 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	return f, nil
+}
+
+// parseTimeParam 解析时间过滤参数：接受 RFC3339 或 Unix 秒（纯数字）；空串为零值。
+func parseTimeParam(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return time.Unix(n, 0).UTC(), nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.UTC(), nil
+}
+
+// GetTaskDiff 处理 GET /api/v1/tasks/{id}/diff：
+// 返回任务基准配置、生成配置与服务端 unified diff（分组任务无实例基准时提示 has_base=false）。
+func (h *Handlers) GetTaskDiff(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	t, err := h.store.GetTask(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	if t.GeneratedYAML == "" {
+		writeError(w, http.StatusConflict, "任务没有可比较的生成配置")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":        t.ID,
+		"base_yaml":      t.BaseYAML,
+		"base_source":    baseSourceOf(t),
+		"generated_yaml": t.GeneratedYAML,
+		"diff":           diff.Unified(t.BaseYAML, t.GeneratedYAML),
+		"has_base":       t.BaseYAML != "",
+	})
 }
 
 // GetTask 处理 GET /api/v1/tasks/{id}。
@@ -312,22 +406,28 @@ func (h *Handlers) ListCollectors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, collectors)
 }
 
-// ListAudit 处理 GET /api/v1/audit?since=&page=&page_size=。
+// ListAudit 处理 GET /api/v1/audit?actor=&action=&subject=&since=&from=&to=&page=&page_size=。
+//
+// 语义提示：`since` 是**审计行 id 游标**（历史语义，返回 id 更大的新记录），
+// 时间区间请用 `from`/`to`（RFC3339 或 Unix 秒，秒级半开区间 [from, to+1s)）。
 // 携带分页参数时返回 {items,total,page,page_size}；否则返回裸数组（向后兼容）。
 func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
 		return
 	}
-	var since int64
-	fmt.Sscanf(r.URL.Query().Get("since"), "%d", &since)
+	filter, err := auditFilterFromQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	page, pageSize, enabled, err := pageParams(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if enabled {
-		items, total, perr := h.store.ListAudit(r.Context(), since, page, pageSize)
+		items, total, perr := h.store.ListAudit(r.Context(), filter, page, pageSize)
 		if perr != nil {
 			writeError(w, http.StatusInternalServerError, "查询审计失败")
 			return
@@ -335,7 +435,7 @@ func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pageResponse[store.AuditLog]{Items: items, Total: total, Page: page, PageSize: pageSize})
 		return
 	}
-	logs, _, err := h.store.ListAudit(r.Context(), since, 0, 0)
+	logs, _, err := h.store.ListAudit(r.Context(), filter, 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询审计失败")
 		return
@@ -343,12 +443,50 @@ func (h *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, logs)
 }
 
+// auditFilterFromQuery 解析审计列表过滤参数（全部可选）。
+// since 保持"审计行 id 游标"语义；时间过滤统一走 from/to。
+func auditFilterFromQuery(r *http.Request) (store.AuditFilter, error) {
+	q := r.URL.Query()
+	var f store.AuditFilter
+	if v := strings.TrimSpace(q.Get("since")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return f, fmt.Errorf("since 必须是审计行 id（非负整数）")
+		}
+		f.SinceID = n
+	}
+	f.Actor = strings.TrimSpace(q.Get("actor"))
+	f.Subject = strings.TrimSpace(q.Get("subject"))
+	action := strings.TrimSpace(q.Get("action"))
+	if !store.IsValidAuditAction(action) {
+		return f, fmt.Errorf("action 取值非法（合法值：%s）", strings.Join(store.AuditActions(), "/"))
+	}
+	f.Action = store.AuditAction(action)
+	var err error
+	if f.From, err = parseTimeParam(q.Get("from")); err != nil {
+		return f, fmt.Errorf("from 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	if f.To, err = parseTimeParam(q.Get("to")); err != nil {
+		return f, fmt.Errorf("to 参数非法（需 RFC3339 或 Unix 秒）")
+	}
+	return f, nil
+}
+
 // --- 回滚与版本历史 ---
 
 // RollbackRequest 是回滚任务创建请求体。
+//
+// 两种来源二选一：
+//   - 内置模式：`version_id`（内置版本快照 id）；
+//   - GitOps 模式：`git_ref`/`git_commit`（按 git 提交回退，内容来自该 commit 的文件）。
 type RollbackRequest struct {
 	CollectorInstanceUID string `json:"collector_instance_uid"`
 	VersionID            int64  `json:"version_id"`
+	// SessionID 是发起该回滚的 AI 会话（可选；会话内发起时回传）。
+	SessionID string `json:"session_id,omitempty"`
+	// GitRef / GitCommit 是 GitOps 模式下的回退目标（分支/tag/commit）。
+	GitRef    string `json:"git_ref,omitempty"`
+	GitCommit string `json:"git_commit,omitempty"`
 }
 
 // RollbackTask 处理 POST /api/v1/tasks/rollback：
@@ -363,8 +501,72 @@ func (h *Handlers) RollbackTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求体解析失败")
 		return
 	}
-	if req.CollectorInstanceUID == "" || req.VersionID <= 0 {
-		writeError(w, http.StatusBadRequest, "collector_instance_uid 与 version_id 均为必填")
+	if req.CollectorInstanceUID == "" {
+		writeError(w, http.StatusBadRequest, "collector_instance_uid 为必填")
+		return
+	}
+	// GitOps 模式：按 commit 回退——内容取自该提交的文件（版本权威在 git）。
+	if req.GitRef != "" || req.GitCommit != "" {
+		repo, ok := h.gitRepo()
+		if !ok {
+			writeError(w, http.StatusConflict, gitDisabledMsg)
+			return
+		}
+		ref := req.GitCommit
+		if ref == "" {
+			ref = req.GitRef
+		}
+		path, err := gitsource.ExpandPathspec(h.deps.Config.GitConfigPathspec, req.CollectorInstanceUID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		content, err := repo.ShowFile(r.Context(), ref, path)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sha, err := repo.Resolve(r.Context(), ref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		res := validator.Validate(content, h.deps.Config.OtelcolBin, h.deps.Config.StrictValidate)
+		if !res.Valid {
+			writeError(w, http.StatusBadRequest, "git 版本内容校验未通过: "+strings.Join(res.Errors, "; "))
+			return
+		}
+		t := &store.Task{
+			ID:                agent.NewULID(),
+			Type:              store.TaskTypeRollback,
+			Status:            store.TaskStatusAwaitingApproval,
+			RequireApproval:   true,
+			Input:             fmt.Sprintf("按 git 提交回退 %s 到 %s", req.CollectorInstanceUID, sha[:8]),
+			SessionID:         req.SessionID,
+			GeneratedYAML:     content,
+			TargetInstanceUID: req.CollectorInstanceUID,
+			RollbackVersionID: 0, // GitOps 回退不依赖内置版本 id
+			GitCommit:         sha,
+			GitPath:           path,
+			GitRef:            req.GitCommit,
+		}
+		if t.GitRef == "" {
+			t.GitRef = req.GitRef
+		}
+		if err := h.tasks.Create(r.Context(), t); err != nil {
+			writeError(w, http.StatusInternalServerError, "创建回滚任务失败")
+			return
+		}
+		_ = h.store.AppendAudit(r.Context(), &store.AuditLog{
+			Actor: approverOf(r, ""), Action: store.AuditActionRollback, Subject: t.ID,
+			Detail:    fmt.Sprintf("git 溯源 commit=%s path=%s ref=%s", sha, path, t.GitRef),
+			CreatedAt: time.Now().UTC(),
+		})
+		writeJSON(w, http.StatusCreated, t)
+		return
+	}
+	if req.VersionID <= 0 {
+		writeError(w, http.StatusBadRequest, "回滚需提供 version_id（内置模式）或 git_ref/git_commit（GitOps 模式）")
 		return
 	}
 	versions, _, err := h.store.ListConfigVersions(r.Context(), req.CollectorInstanceUID, 0, 0)
@@ -395,6 +597,7 @@ func (h *Handlers) RollbackTask(w http.ResponseWriter, r *http.Request) {
 		Status:            store.TaskStatusAwaitingApproval,
 		RequireApproval:   true,
 		Input:             fmt.Sprintf("回滚 %s 到版本 %d", req.CollectorInstanceUID, req.VersionID),
+		SessionID:         req.SessionID,
 		TargetInstanceUID: req.CollectorInstanceUID,
 		RollbackVersionID: req.VersionID,
 	}
@@ -432,6 +635,30 @@ func (h *Handlers) ListVersions(w http.ResponseWriter, r *http.Request, uid stri
 		return
 	}
 	writeJSON(w, http.StatusOK, versions)
+}
+
+// baseForCollector 取实例的基准配置与来源（F-9）：Agent 上报值优先，回退服务端记录。
+func baseForCollector(ctx context.Context, c *store.Collector, reg *opampserver.Registry) (string, string) {
+	if c == nil {
+		return "", ""
+	}
+	if reg != nil {
+		if yaml, ok := reg.ReportedEffective(c.InstanceUID); ok && yaml != "" {
+			return yaml, "reported"
+		}
+	}
+	if c.EffectiveConfig != "" {
+		return c.EffectiveConfig, "store"
+	}
+	return "", ""
+}
+
+// baseSourceOf 返回任务的基准来源（无基准时空串）。
+func baseSourceOf(t *store.Task) string {
+	if t.BaseYAML == "" {
+		return ""
+	}
+	return t.BaseSource
 }
 
 // --- helpers ---

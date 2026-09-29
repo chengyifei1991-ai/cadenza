@@ -106,6 +106,42 @@ const (
 	TaskStatusFailed TaskStatus = "failed"
 )
 
+// TaskStatuses 列出全部合法任务状态（HTTP 层参数校验用）。
+func TaskStatuses() []string {
+	return []string{"pending", "generating", "validating", "awaiting_approval", "applying", "done", "rejected", "failed"}
+}
+
+// TaskTypes 列出全部合法任务类型（HTTP 层参数校验用）。
+func TaskTypes() []string {
+	return []string{"generate", "optimize", "apply", "upgrade", "rollback"}
+}
+
+// IsValidTaskStatus 判断任务状态取值是否合法（空串表示不过滤，视为合法）。
+func IsValidTaskStatus(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, s := range TaskStatuses() {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidTaskType 判断任务类型取值是否合法（空串表示不过滤，视为合法）。
+func IsValidTaskType(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, t := range TaskTypes() {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
+
 // Task 是配置生成/下发任务的执行单元，驱动完整状态机。
 type Task struct {
 	// ID 是任务唯一标识（ULID）。
@@ -120,6 +156,20 @@ type Task struct {
 	Input string `json:"input"`
 	// GeneratedYAML 是生成/待下发的配置内容。
 	GeneratedYAML string `json:"generated_yaml"`
+	// BaseYAML 是本次变更的**基准配置**快照（下发前目标当前生效配置的代表值），
+	// 供服务端生成任务级 diff（分组目标任务没有单一实例基准，故落库固化）。
+	BaseYAML string `json:"base_yaml,omitempty"`
+	// GitCommit / GitPath / GitRef 记录该任务的 git 溯源（GitOps 可选模式）；
+	// 内置模式下为空，互不影响。
+	GitCommit string `json:"git_commit,omitempty"`
+	GitPath   string `json:"git_path,omitempty"`
+	GitRef    string `json:"git_ref,omitempty"`
+	// BaseSource 标明 BaseYAML 的来源：reported（Agent 权威上报）/ store（服务端记录，
+	// 可能是下发意图值）/ 空串（无基准）。避免"意图值"被误当作"正在运行的配置"。
+	BaseSource string `json:"base_source,omitempty"`
+	// SessionID 是发起该任务的 AI 会话 ID（会话内创建的任务）；
+	// 为空表示非会话发起（如 REST/MCP 直调）。
+	SessionID string `json:"session_id,omitempty"`
 	// TargetGroupID 是目标分组 ID（generate/optimize 任务使用）。
 	TargetGroupID string `json:"target_group_id"`
 	// TargetInstanceUID 是目标 Collector 的 instance_uid（rollback/apply 任务使用）。
@@ -141,8 +191,24 @@ type Task struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TaskEvent 记录一次任务状态迁移（变更效率埋点：审批等待/下发时长/成功率等）。
+type TaskEvent struct {
+	// ID 是自增主键（同秒内排序与分页游标）。
+	ID int64 `json:"id"`
+	// TaskID 是所属任务。
+	TaskID string `json:"task_id"`
+	// FromStatus 是迁移前状态（创建事件为空串）。
+	FromStatus string `json:"from_status"`
+	// ToStatus 是迁移后状态。
+	ToStatus string `json:"to_status"`
+	// CreatedAt 是迁移发生时间。
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ChatMessage 是会话中的一条消息。
 type ChatMessage struct {
+	// ID 是消息在会话内的自增序号（keyset 分页游标）。
+	ID int64 `json:"id,omitempty"`
 	// Role 是消息角色：user / assistant。
 	Role string `json:"role"`
 	// Content 是消息内容。
@@ -241,6 +307,24 @@ const (
 	// AuditActionRollback 表示配置回滚。
 	AuditActionRollback AuditAction = "rollback"
 )
+
+// AuditActions 列出全部合法审计动作（HTTP 层参数校验用）。
+func AuditActions() []string {
+	return []string{"generate", "approve", "reject", "apply", "upgrade", "rollback"}
+}
+
+// IsValidAuditAction 判断审计动作取值是否合法（空串表示不过滤，视为合法）。
+func IsValidAuditAction(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, a := range AuditActions() {
+		if v == a {
+			return true
+		}
+	}
+	return false
+}
 
 // AuditLog 是审计记录，所有配置变更必须留痕。
 type AuditLog struct {

@@ -7,6 +7,33 @@ export interface SystemInfo {
   version: string;
   auth_mode: AuthMode;
   demo_mode: boolean;
+  mcp_auth?: boolean;
+  /** 配置版本来源：builtin（内置快照+回滚）或 git（GitOps 可选模式）。 */
+  config_source?: "builtin" | "git";
+  /** 是否启用 GitOps（config_source=git 且仓库可用）。 */
+  git_enabled?: boolean;
+}
+
+/** GitOps：仓库只读状态。 */
+export interface GitStatus {
+  dir: string;
+  ref: string;
+  sha: string;
+  short_sha: string;
+  author: string;
+  subject: string;
+  committed_at: string;
+  dirty: boolean;
+}
+
+/** GitOps：一次提交。 */
+export interface GitCommit {
+  sha: string;
+  short_sha: string;
+  author: string;
+  date: string;
+  subject: string;
+  path?: string;
 }
 
 export interface Me {
@@ -54,6 +81,12 @@ export interface Task {
   require_approval: boolean;
   input: string;
   generated_yaml?: string;
+  /** 发起该任务的 AI 会话 ID（会话内创建时回写；非会话发起的任务为空）。 */
+  session_id?: string;
+  /** GitOps 溯源：该任务下发的 git 提交 / 文件路径 / ref。 */
+  git_commit?: string;
+  git_path?: string;
+  git_ref?: string;
   target_group_id?: string;
   target_instance_uid?: string;
   rollback_version_id?: number;
@@ -78,6 +111,8 @@ export interface AuditLog {
 }
 
 export interface ChatMessage {
+  /** 会话内自增序号（keyset 分页游标；服务端 1.1.0-c 起返回）。 */
+  id?: number;
   role: "user" | "assistant";
   content: string;
   created_at: string;

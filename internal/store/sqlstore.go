@@ -19,6 +19,38 @@ type sqlStore struct {
 	driver string
 }
 
+// isBusyError 判断是否为 SQLite 忙锁错误（需要重试）。
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+}
+
+// execCtx 执行写语句：遇 SQLITE_BUSY 做有限重试（busy_timeout 之外的兜底）。
+// 并发来源：HTTP 处理器、OpAMP 状态上报与埋点事件同时写库。
+func (s *sqlStore) execCtx(ctx context.Context, query string, args ...any) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = func() error {
+			_, execErr := s.db.ExecContext(ctx, query, args...)
+			return execErr
+		}(); err == nil {
+			return nil
+		}
+		if !isBusyError(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(20*(attempt+1)) * time.Millisecond):
+		}
+	}
+	return err
+}
+
 // Close 实现 Store.Close。
 func (s *sqlStore) Close() error {
 	return s.db.Close()
@@ -92,6 +124,15 @@ func (s *sqlStore) initSchema() error {
 			started_at TEXT NOT NULL,
 			finished_at TEXT NOT NULL DEFAULT ''
 		)`,
+		`CREATE TABLE IF NOT EXISTS task_events (
+			id ` + autoInc + `,
+			task_id TEXT NOT NULL,
+			from_status TEXT NOT NULL DEFAULT '',
+			to_status TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_events_created ON task_events(created_at)`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id ` + autoInc + `,
 			actor TEXT NOT NULL,
@@ -111,6 +152,27 @@ func (s *sqlStore) initSchema() error {
 		return err
 	}
 	if err := s.ensureColumn("tasks", "rollback_version_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// 幂等迁移：tasks 新增 session_id（任务↔会话绑定，1.1.0-b）。
+	if err := s.ensureColumn("tasks", "session_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// 幂等迁移：tasks 新增 base_yaml（任务级 diff 基准快照，1.1.0-d）。
+	if err := s.ensureColumn("tasks", "base_yaml", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// 幂等迁移：tasks 新增 base_source（基准来源标注：reported/store，1.1.0-d 补强）。
+	if err := s.ensureColumn("tasks", "base_source", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// 幂等迁移：tasks 新增 git 溯源列（GitOps 可选模式）。
+	for _, col := range []string{"git_commit", "git_path", "git_ref"} {
+		if err := s.ensureColumn("tasks", col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id)`); err != nil {
 		return err
 	}
 	return nil
@@ -164,6 +226,12 @@ func (s *sqlStore) ensureColumn(table, column, decl string) error {
 
 // timeFmt 是时间列的统一文本格式（RFC3339Nano，SQLite/MySQL 均兼容）。
 const timeFmt = time.RFC3339Nano
+
+// secondBound 将时间截断为秒级字符串（与 substr(created_at,1,19) 同一形态），
+// 供时间区间过滤做跨驱动一致的字符串比较。
+func secondBound(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05")
+}
 
 func fmtTime(t time.Time) string {
 	if t.IsZero() {
@@ -364,14 +432,15 @@ func (s *sqlStore) CreateTask(ctx context.Context, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal approvers: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, target_group_id,
+	return s.execCtx(ctx, `
+		INSERT INTO tasks (id, type, status, require_approval, input, generated_yaml, base_yaml, base_source,
+			git_commit, git_path, git_ref, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML,
-		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver, t.RejectReason,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.BaseYAML, t.BaseSource,
+		t.GitCommit, t.GitPath, t.GitRef, t.SessionID, t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID,
+		string(approvers), t.Approver, t.RejectReason,
 		t.ModelUsed, t.Error, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt))
-	return err
 }
 
 func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
@@ -380,40 +449,74 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 		return fmt.Errorf("marshal approvers: %w", err)
 	}
 	t.UpdatedAt = time.Now().UTC()
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, target_group_id=?,
+	return s.execCtx(ctx, `
+		UPDATE tasks SET type=?, status=?, require_approval=?, input=?, generated_yaml=?, base_yaml=?, base_source=?,
+			git_commit=?, git_path=?, git_ref=?, session_id=?, target_group_id=?,
 			target_instance_uid=?, rollback_version_id=?, approvers=?, approver=?, reject_reason=?, model_used=?, error=?, updated_at=?
 		WHERE id = ?`,
-		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML,
+		string(t.Type), string(t.Status), boolInt(t.RequireApproval), t.Input, t.GeneratedYAML, t.BaseYAML, t.BaseSource,
+		t.GitCommit, t.GitPath, t.GitRef, t.SessionID,
 		t.TargetGroupID, t.TargetInstanceUID, t.RollbackVersionID, string(approvers), t.Approver,
 		t.RejectReason, t.ModelUsed, t.Error, fmtTime(t.UpdatedAt), t.ID)
-	return err
 }
 
 func (s *sqlStore) GetTask(ctx context.Context, id string) (*Task, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
+		SELECT id, type, status, require_approval, input, generated_yaml, base_yaml, base_source,
+			git_commit, git_path, git_ref, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
 		FROM tasks WHERE id = ?`, id)
 	return scanTask(row)
 }
 
-// ListTasks 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
-func (s *sqlStore) ListTasks(ctx context.Context, status TaskStatus, page, pageSize int) ([]Task, int64, error) {
+// ListTasks 按过滤条件分页返回任务列表（created_at 降序）及过滤后总数。
+func (s *sqlStore) ListTasks(ctx context.Context, f TaskFilter, page, pageSize int) ([]Task, int64, error) {
+	conds := make([]string, 0, 6)
+	args := make([]any, 0, 8)
+	if f.Status != "" {
+		conds = append(conds, "status = ?")
+		args = append(args, string(f.Status))
+	}
+	if f.Type != "" {
+		conds = append(conds, "type = ?")
+		args = append(args, string(f.Type))
+	}
+	if f.Target != "" {
+		conds = append(conds, "(target_instance_uid = ? OR target_group_id = ?)")
+		args = append(args, f.Target, f.Target)
+	}
+	if f.SessionID != "" {
+		conds = append(conds, "session_id = ?")
+		args = append(args, f.SessionID)
+	}
+	// 时间过滤采用**秒级半开区间** [since, until+1s)：
+	// 存储格式为 RFC3339Nano（小数秒长度可变），直接对整串做字典序比较会在
+	// 精度不一致的边界处静默漏行（'Z'(0x5A) > '.'(0x2E)）。故统一截断到秒
+	// （substr(...,1,19)）后比较——SQLite/MySQL 通用的纯字符串运算。
+	// 语义：since 含下界那一秒；until 含其上界所在整秒（粒度=秒）。
+	if !f.Since.IsZero() {
+		conds = append(conds, "substr(created_at,1,19) >= ?")
+		args = append(args, secondBound(f.Since))
+	}
+	if !f.Until.IsZero() {
+		conds = append(conds, "substr(created_at,1,19) < ?")
+		args = append(args, secondBound(f.Until.Truncate(time.Second).Add(time.Second)))
+	}
 	where := ""
-	var args []any
-	if status != "" {
-		where = " WHERE status = ?"
-		args = append(args, string(status))
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	var total int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
+	// 排序同样按秒截断 + id（ULID，时间单调）兜底：避免 RFC3339Nano 变长
+	// 小数秒导致同秒内顺序与真实时间不一致（'.' < 'Z'）。
 	query := `
-		SELECT id, type, status, require_approval, input, generated_yaml, target_group_id,
+		SELECT id, type, status, require_approval, input, generated_yaml, base_yaml, base_source,
+			git_commit, git_path, git_ref, session_id, target_group_id,
 			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
-		FROM tasks` + where + ` ORDER BY created_at DESC`
+		FROM tasks` + where + ` ORDER BY substr(created_at,1,19) DESC, id DESC`
 	if pageSize > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, pageSize, (page-1)*pageSize)
@@ -441,7 +544,8 @@ func scanTask(sc rowScanner) (*Task, error) {
 		reqApproval  int
 		created, upd string
 	)
-	if err := sc.Scan(&t.ID, &t.Type, &t.Status, &reqApproval, &t.Input, &t.GeneratedYAML,
+	if err := sc.Scan(&t.ID, &t.Type, &t.Status, &reqApproval, &t.Input, &t.GeneratedYAML, &t.BaseYAML, &t.BaseSource,
+		&t.GitCommit, &t.GitPath, &t.GitRef, &t.SessionID,
 		&t.TargetGroupID, &t.TargetInstanceUID, &t.RollbackVersionID, &approvers, &t.Approver,
 		&t.RejectReason, &t.ModelUsed, &t.Error, &created, &upd); err != nil {
 		return nil, mapNoRows(err)
@@ -487,7 +591,7 @@ func (s *sqlStore) GetSession(ctx context.Context, id string) (*ChatSession, err
 	}
 	sess.CreatedAt = ts
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY id`, id)
+		`SELECT id, role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +601,7 @@ func (s *sqlStore) GetSession(ctx context.Context, id string) (*ChatSession, err
 			m       ChatMessage
 			msgTime string
 		)
-		if err := rows.Scan(&m.Role, &m.Content, &msgTime); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &msgTime); err != nil {
 			return nil, err
 		}
 		t, err := parseTime(msgTime)
@@ -510,11 +614,118 @@ func (s *sqlStore) GetSession(ctx context.Context, id string) (*ChatSession, err
 	return &sess, rows.Err()
 }
 
+// ListMessages 按 keyset 分页读取会话消息（id 升序）及会话消息总数。
+//
+// 游标语义（便于前端"加载更早"与增量刷新）：
+//   - 两者皆 0：返回**最后** limit 条（尾部窗口，按 id 升序）；
+//   - BeforeID > 0：返回 id < BeforeID 的最后 limit 条（向前翻历史）；
+//   - AfterID  > 0：返回 id > AfterID 的前 limit 条（增量刷新）。
+func (s *sqlStore) ListMessages(ctx context.Context, sessionID string, beforeID, afterID int64, limit int) ([]ChatMessage, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_messages WHERE session_id = ?`, sessionID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT id, role, content, created_at FROM chat_messages WHERE session_id = ?`
+	args := []any{sessionID}
+	switch {
+	case afterID > 0:
+		query += ` AND id > ? ORDER BY id ASC LIMIT ?`
+		args = append(args, afterID, limit)
+	case beforeID > 0:
+		query += ` AND id < ? ORDER BY id DESC LIMIT ?`
+		args = append(args, beforeID, limit)
+	default:
+		query += ` ORDER BY id DESC LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]ChatMessage, 0, limit)
+	for rows.Next() {
+		var m ChatMessage
+		var created string
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &created); err != nil {
+			return nil, 0, err
+		}
+		ts, err := parseTime(created)
+		if err != nil {
+			return nil, 0, fmt.Errorf("parse created_at: %w", err)
+		}
+		m.CreatedAt = ts
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// DESC 取窗口后翻正为时间升序返回。
+	if afterID <= 0 {
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+	return out, total, nil
+}
+
+// AppendTaskEvent 追加一条任务状态迁移事件（埋点，best effort）。
+func (s *sqlStore) AppendTaskEvent(ctx context.Context, e *TaskEvent) error {
+	return s.execCtx(ctx,
+		`INSERT INTO task_events (task_id, from_status, to_status, created_at) VALUES (?, ?, ?, ?)`,
+		e.TaskID, e.FromStatus, e.ToStatus, fmtTime(e.CreatedAt))
+}
+
+// ListTaskEvents 返回 since 之后（含）的状态迁移事件，按 id 升序（同一秒内也稳定）。
+// 时间下界与任务/审计过滤同口径：substr(created_at,1,19) 秒级比较。
+func (s *sqlStore) ListTaskEvents(ctx context.Context, since time.Time) ([]TaskEvent, error) {
+	query := `SELECT id, task_id, from_status, to_status, created_at FROM task_events`
+	args := []any{}
+	if !since.IsZero() {
+		query += ` WHERE substr(created_at,1,19) >= ?`
+		args = append(args, secondBound(since))
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]TaskEvent, 0)
+	for rows.Next() {
+		var (
+			e       TaskEvent
+			created string
+		)
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.FromStatus, &e.ToStatus, &created); err != nil {
+			return nil, err
+		}
+		ts, err := parseTime(created)
+		if err != nil {
+			return nil, fmt.Errorf("parse created_at: %w", err)
+		}
+		e.CreatedAt = ts
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。
+func (s *sqlStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_sessions WHERE id = ?`, id).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (s *sqlStore) AppendMessage(ctx context.Context, sessionID string, m ChatMessage) error {
-	_, err := s.db.ExecContext(ctx,
+	return s.execCtx(ctx,
 		`INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)`,
 		sessionID, m.Role, m.Content, fmtTime(m.CreatedAt))
-	return err
 }
 
 // listSessionQuery 是会话列表的查询骨架：每行附带消息聚合摘要（标量子查询），
@@ -675,12 +886,38 @@ func (s *sqlStore) AppendAudit(ctx context.Context, a *AuditLog) error {
 }
 
 // ListAudit 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
-func (s *sqlStore) ListAudit(ctx context.Context, since int64, page, pageSize int) ([]AuditLog, int64, error) {
+func (s *sqlStore) ListAudit(ctx context.Context, f AuditFilter, page, pageSize int) ([]AuditLog, int64, error) {
+	conds := make([]string, 0, 5)
+	args := make([]any, 0, 8)
+	// 注意：SinceID 是**审计行 id 游标**（历史语义），不是时间戳。
+	if f.SinceID > 0 {
+		conds = append(conds, "id > ?")
+		args = append(args, f.SinceID)
+	}
+	if f.Actor != "" {
+		conds = append(conds, "actor = ?")
+		args = append(args, f.Actor)
+	}
+	if f.Action != "" {
+		conds = append(conds, "action = ?")
+		args = append(args, string(f.Action))
+	}
+	if f.Subject != "" {
+		conds = append(conds, "subject = ?")
+		args = append(args, f.Subject)
+	}
+	// 时间区间与任务列表同口径：秒级半开区间 [From, To+1s)（见 secondBound 注释）。
+	if !f.From.IsZero() {
+		conds = append(conds, "substr(created_at,1,19) >= ?")
+		args = append(args, secondBound(f.From))
+	}
+	if !f.To.IsZero() {
+		conds = append(conds, "substr(created_at,1,19) < ?")
+		args = append(args, secondBound(f.To.Truncate(time.Second).Add(time.Second)))
+	}
 	where := ""
-	var args []any
-	if since > 0 {
-		where = " WHERE id > ?"
-		args = append(args, since)
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	var total int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {

@@ -304,14 +304,20 @@ func healthyStatus(pid int) *protobufs.ComponentHealth {
 }
 
 // collectorVersion 读取 collector 二进制版本（best effort）。
+// 输出形如 "otelcol-contrib version 0.156.0"，需跳过 "version" 字样取语义化版本。
 func collectorVersion(bin string) string {
 	out, err := exec.Command(bin, "--version").Output()
 	if err != nil {
 		return "unknown"
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) >= 2 {
-		return fields[1]
+	for _, f := range fields {
+		if f == "version" || f == "v" {
+			continue
+		}
+		if f[0] >= '0' && f[0] <= '9' {
+			return strings.TrimPrefix(f, "v")
+		}
 	}
 	return strings.TrimSpace(string(out))
 }

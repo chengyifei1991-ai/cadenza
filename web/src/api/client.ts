@@ -1,10 +1,14 @@
 // 统一 fetch 客户端与类型化 API（契约清单见 docs/web-frontend-prd.md §3）。
 import type {
+  AuditAction,
   AuditLog,
   AuthMode,
+  ChatMessage,
   ChatSession,
   Collector,
   ConfigVersion,
+  GitCommit,
+  GitStatus,
   Me,
   PageEnvelope,
   SessionSummary,
@@ -12,6 +16,7 @@ import type {
   SystemInfo,
   Task,
   TaskStatus,
+  TaskType,
 } from "./types";
 
 const BASE = ""; // 同源部署；开发期由 Vite proxy 转发 /api。
@@ -92,9 +97,14 @@ export const api = {
   },
 
   // 任务
-  listTasks(params: { status?: TaskStatus } & ListParams = {}): Promise<PageEnvelope<Task>> {
+  listTasks(
+    params: { status?: TaskStatus; type?: TaskType; target?: string; session_id?: string } & ListParams = {},
+  ): Promise<PageEnvelope<Task>> {
     const q = new URLSearchParams();
     if (params.status) q.set("status", params.status);
+    if (params.type) q.set("type", params.type);
+    if (params.target) q.set("target", params.target);
+    if (params.session_id) q.set("session_id", params.session_id);
     if (params.page) q.set("page", String(params.page));
     if (params.page_size) q.set("page_size", String(params.page_size));
     return request<PageEnvelope<Task>>(`/api/v1/tasks?${q}`);
@@ -102,28 +112,92 @@ export const api = {
   getTask(id: string): Promise<Task> {
     return request<Task>(`/api/v1/tasks/${id}`);
   },
+  /** 任务级 diff（服务端 unified diff；支持分组目标，无需单实例基准）。 */
+  getTaskDiff(id: string): Promise<{
+    task_id: string;
+    base_yaml: string;
+    generated_yaml: string;
+    diff: string;
+    has_base: boolean;
+  }> {
+    return request(`/api/v1/tasks/${encodeURIComponent(id)}/diff`);
+  },
   approveTask(id: string): Promise<unknown> {
     return request(`/api/v1/tasks/${id}/approve`, { method: "POST", body: {} });
   },
   rejectTask(id: string, reason: string): Promise<unknown> {
     return request(`/api/v1/tasks/${id}/reject`, { method: "POST", body: { reason } });
   },
-  rollbackTask(collectorInstanceUid: string, versionId: number): Promise<Task> {
+  rollbackTask(collectorInstanceUid: string, versionId: number, sessionId?: string): Promise<Task> {
     return request<Task>("/api/v1/tasks/rollback", {
       method: "POST",
-      body: { collector_instance_uid: collectorInstanceUid, version_id: versionId },
+      body: { collector_instance_uid: collectorInstanceUid, version_id: versionId, session_id: sessionId },
     });
   },
-  applyTask(collectorInstanceUid: string, yaml: string, note?: string): Promise<Task> {
+  /** GitOps：按 git 提交回退（内容取自该 commit 的文件）。 */
+  rollbackToGitCommit(collectorInstanceUid: string, gitCommit: string): Promise<Task> {
+    return request<Task>("/api/v1/tasks/rollback", {
+      method: "POST",
+      body: { collector_instance_uid: collectorInstanceUid, git_commit: gitCommit },
+    });
+  },
+  /** GitOps：按 git 提交下发（服务端从仓库读取内容）。 */
+  applyFromGitRef(collectorInstanceUid: string, gitRef: string, note?: string): Promise<Task> {
     return request<Task>("/api/v1/tasks/apply", {
       method: "POST",
-      body: { collector_instance_uid: collectorInstanceUid, yaml, note },
+      body: { collector_instance_uid: collectorInstanceUid, git_ref: gitRef, note },
+    });
+  },
+  /** GitOps：仓库只读状态。 */
+  getGitStatus(): Promise<GitStatus> {
+    return request<GitStatus>("/api/v1/git/status");
+  },
+  /** GitOps：某 Collector 配置文件的历史提交。 */
+  getGitCommits(instanceUid: string, limit = 20): Promise<{
+    items: GitCommit[];
+    total: number;
+    path: string;
+    ref: string;
+  }> {
+    const q = new URLSearchParams({ instance_uid: instanceUid, limit: String(limit) });
+    return request(`/api/v1/git/commits?${q}`);
+  },
+  /** GitOps：读取指定 ref 的配置内容。 */
+  getGitFile(instanceUid: string, ref?: string): Promise<{
+    ref: string;
+    git_commit: string;
+    path: string;
+    yaml: string;
+  }> {
+    const q = new URLSearchParams({ instance_uid: instanceUid });
+    if (ref) q.set("ref", ref);
+    return request(`/api/v1/git/file?${q}`);
+  },
+  applyTask(collectorInstanceUid: string, yaml: string, note?: string, sessionId?: string): Promise<Task> {
+    return request<Task>("/api/v1/tasks/apply", {
+      method: "POST",
+      body: { collector_instance_uid: collectorInstanceUid, yaml, note, session_id: sessionId },
     });
   },
 
   // 审计 / 会话 / 统计
-  listAudit(params: ListParams = {}): Promise<PageEnvelope<AuditLog>> {
+  /** 审计列表：支持服务端筛选（操作者/动作/对象/时间区间）。 */
+  listAudit(
+    params: {
+      actor?: string;
+      action?: AuditAction;
+      subject?: string;
+      /** 时间区间（RFC3339）；后端为秒级半开区间 [from, to+1s) */
+      from?: string;
+      to?: string;
+    } & ListParams = {},
+  ): Promise<PageEnvelope<AuditLog>> {
     const q = new URLSearchParams();
+    if (params.actor) q.set("actor", params.actor);
+    if (params.action) q.set("action", params.action);
+    if (params.subject) q.set("subject", params.subject);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
     if (params.page) q.set("page", String(params.page));
     if (params.page_size) q.set("page_size", String(params.page_size));
     return request<PageEnvelope<AuditLog>>(`/api/v1/audit?${q}`);
@@ -139,6 +213,25 @@ export const api = {
   },
   getSession(id: string): Promise<ChatSession> {
     return request<ChatSession>(`/api/v1/sessions/${id}`);
+  },
+  /** 会话消息 keyset 分页：默认返回尾部窗口；before_id 向前翻历史，after_id 增量刷新。 */
+  listSessionMessages(
+    id: string,
+    params: { before_id?: number; after_id?: number; limit?: number } = {},
+  ): Promise<{ items: ChatMessage[]; total: number }> {
+    const q = new URLSearchParams();
+    if (params.before_id) q.set("before_id", String(params.before_id));
+    if (params.after_id) q.set("after_id", String(params.after_id));
+    if (params.limit) q.set("limit", String(params.limit));
+    return request<{ items: ChatMessage[]; total: number }>(
+      `/api/v1/sessions/${encodeURIComponent(id)}/messages?${q}`,
+    );
+  },
+  /** 会话发起的任务（任务↔会话硬绑定，替代前端文本正则联动）。 */
+  listSessionTasks(id: string): Promise<PageEnvelope<Task>> {
+    return request<PageEnvelope<Task>>(
+      `/api/v1/sessions/${encodeURIComponent(id)}/tasks?page=1&page_size=20`,
+    );
   },
   chat(sessionId: string | undefined, message: string): Promise<{ session_id: string; reply: string }> {
     return request("/api/v1/chat", {

@@ -2,17 +2,26 @@
 import { useMemo } from "react";
 import { Tag, Typography } from "antd";
 import { diffText } from "../lib/diff";
+import type { DiffResult } from "../lib/diff";
 
 interface Props {
-  oldText: string;
-  newText: string;
+  /** 待比较的原文（与 result 二选一） */
+  oldText?: string;
+  /** 待比较的新文（与 result 二选一） */
+  newText?: string;
+  /** 直接传入已算好的差异（如服务端 unified diff 解析结果），优先于 oldText/newText */
+  result?: DiffResult;
   /** 最大显示行数（超出显示截断提示，避免大配置卡渲染） */
   maxLines?: number;
   height?: number;
 }
 
-export default function DiffView({ oldText, newText, maxLines = 400, height = 320 }: Props) {
-  const result = useMemo(() => diffText(oldText, newText), [oldText, newText]);
+export default function DiffView({ oldText, newText, result: given, maxLines = 400, height = 320 }: Props) {
+  const computed = useMemo(
+    () => given ?? diffText(oldText ?? "", newText ?? ""),
+    [given, oldText, newText],
+  );
+  const result = computed;
   if (!result.changed) {
     return <Typography.Text type="secondary">配置内容一致，无差异。</Typography.Text>;
   }

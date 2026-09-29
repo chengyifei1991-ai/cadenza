@@ -47,7 +47,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 		Store: st, Tasks: taskSvc, OpAMP: opampSrv, Model: fake,
 		Config: &config.Config{RequireApproval: true, OtelcolBin: ""}, Logger: logger,
 	}
-	return NewHandlers(st, taskSvc, agent.NewOrchestrator(deps), deps, logger)
+	return NewHandlers(st, taskSvc, agent.NewOrchestrator(deps), deps, logger, nil, "builtin")
 }
 
 // fakeModel 与 agent 包测试相同的可编程模型（此处独立实现避免跨包依赖）。
@@ -348,7 +348,7 @@ func TestRollbackTask(t *testing.T) {
 		})
 	}
 	// 成功创建的任务应处于 awaiting_approval 且带回滚字段。
-	tasks, _, _ := h.store.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
+	tasks, _, _ := h.store.ListTasks(ctx, store.TaskFilter{Status: store.TaskStatusAwaitingApproval}, 0, 0)
 	if len(tasks) != 1 {
 		t.Fatalf("应创建 1 个待审批回滚任务，got %d", len(tasks))
 	}

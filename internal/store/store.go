@@ -7,10 +7,41 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 	_ "modernc.org/sqlite"             // 纯 Go SQLite driver（无 CGO）
 )
+
+// TaskFilter 是任务列表的可选过滤条件（零值字段 = 不过滤）。
+type TaskFilter struct {
+	// Status 按任务状态精确过滤。
+	Status TaskStatus
+	// Type 按任务类型精确过滤。
+	Type TaskType
+	// Target 匹配 target_instance_uid 或 target_group_id（任一相等即命中）。
+	Target string
+	// SessionID 按发起会话过滤（任务↔会话绑定）。
+	SessionID string
+	// Since / Until 按 created_at 区间过滤（零值表示不限）。
+	Since time.Time
+	Until time.Time
+}
+
+// AuditFilter 是审计列表的可选过滤条件（零值字段 = 不过滤）。
+type AuditFilter struct {
+	// SinceID 是**审计行 id 游标**（历史语义：返回 id 更大的新记录），非时间戳。
+	// 时间区间请用 From/To。
+	SinceID int64
+	// Actor / Action / Subject 分别按操作者、动作、关联对象精确过滤。
+	Actor   string
+	Action  AuditAction
+	Subject string
+	// From / To 按 created_at 区间过滤（秒级半开区间 [From, To+1s)，零值表示不限）。
+	From time.Time
+	To   time.Time
+}
 
 // Store 是持久化存储的抽象接口，提供 SQLite 与 MySQL 两种实现，
 // 通过 New 工厂按驱动名切换（设计方案 v3 第 6 节）。
@@ -45,14 +76,24 @@ type Store interface {
 	UpdateTask(ctx context.Context, t *Task) error
 	// GetTask 按 ID 查询任务。
 	GetTask(ctx context.Context, id string) (*Task, error)
-	// ListTasks 按状态过滤分页返回任务列表（created_at 降序）及过滤后总数。
-	// status 为空返回全部；page 从 1 开始；pageSize<=0 时返回全量。
-	ListTasks(ctx context.Context, status TaskStatus, page, pageSize int) (items []Task, total int64, err error)
+	// ListTasks 按过滤条件分页返回任务列表（created_at 降序）及过滤后总数。
+	// filter 的零值字段表示不过滤；page 从 1 开始；pageSize<=0 时返回全量。
+	ListTasks(ctx context.Context, filter TaskFilter, page, pageSize int) (items []Task, total int64, err error)
+
+	// AppendTaskEvent 追加一条任务状态迁移事件（变更效率埋点，best effort 写入）。
+	AppendTaskEvent(ctx context.Context, e *TaskEvent) error
+	// ListTaskEvents 返回 since 之后（含）的任务状态迁移事件，按 id 升序。
+	ListTaskEvents(ctx context.Context, since time.Time) (items []TaskEvent, err error)
 
 	// CreateSession 创建会话。
 	CreateSession(ctx context.Context, s *ChatSession) error
 	// GetSession 查询会话（含消息）。
 	GetSession(ctx context.Context, id string) (*ChatSession, error)
+	// SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。
+	SessionExists(ctx context.Context, id string) (bool, error)
+	// ListMessages 按 keyset 分页读取会话消息（id 升序）及会话消息总数。
+	// beforeID/afterID 游标语义见实现注释；limit<=0 时默认 50。
+	ListMessages(ctx context.Context, sessionID string, beforeID, afterID int64, limit int) (items []ChatMessage, total int64, err error)
 	// AppendMessage 向会话追加一条消息。
 	AppendMessage(ctx context.Context, sessionID string, m ChatMessage) error
 	// ListSessions 分页返回会话列表（按最近消息倒序，空会话置底）及总数。
@@ -75,9 +116,9 @@ type Store interface {
 
 	// AppendAudit 写入一条审计记录。
 	AppendAudit(ctx context.Context, a *AuditLog) error
-	// ListAudit 按 since 过滤分页返回审计记录（id 降序）及过滤后总数。
-	// since 为零值返回全部；page 从 1 开始；pageSize<=0 时返回全量。
-	ListAudit(ctx context.Context, since int64, page, pageSize int) (items []AuditLog, total int64, err error)
+	// ListAudit 按过滤条件分页返回审计记录（id 降序）及过滤后总数。
+	// filter 零值字段表示不过滤；page 从 1 开始；pageSize<=0 时返回全量。
+	ListAudit(ctx context.Context, filter AuditFilter, page, pageSize int) (items []AuditLog, total int64, err error)
 }
 
 // ErrNotFound 表示查询的记录不存在。
@@ -85,12 +126,30 @@ var ErrNotFound = fmt.Errorf("store: record not found")
 
 // New 创建 Store。driver 支持 "mysql" 与 "sqlite"。
 func New(driver, dsn string) (Store, error) {
-	db, err := sql.Open(driver, dsn)
+	openDSN := dsn
+	if driver == "sqlite" {
+		// SQLITE_BUSY 的根治：busy_timeout 与 journal_mode 都是**每连接**属性，
+		// 只在 open 后 Exec 一次只对池中一条连接生效，其余连接仍会立即报忙锁。
+		// 因此把 pragma 写进 DSN，让连接池每条新连接都带上（modernc.org/sqlite 语法）。
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
+		}
+		openDSN = dsn + sep + "_pragma=busy_timeout(5000)"
+		if !strings.Contains(dsn, ":memory:") && !strings.Contains(dsn, "mode=memory") {
+			openDSN += "&_pragma=journal_mode(WAL)"
+		}
+	}
+	db, err := sql.Open(driver, openDSN)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", driver, err)
 	}
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("store: ping %s: %w", driver, err)
+	}
+	if driver == "sqlite" {
+		// 并发写上限：SQLite 单写者，限制连接数减少锁竞争（读仍可并发）。
+		db.SetMaxOpenConns(4)
 	}
 	s := &sqlStore{db: db, driver: driver}
 	if err := s.initSchema(); err != nil {

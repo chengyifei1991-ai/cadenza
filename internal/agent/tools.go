@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/chengyifei1991-ai/cadenza/internal/config"
+	"github.com/chengyifei1991-ai/cadenza/internal/diff"
+	"github.com/chengyifei1991-ai/cadenza/internal/gitsource"
 	"github.com/chengyifei1991-ai/cadenza/internal/opampserver"
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 	"github.com/chengyifei1991-ai/cadenza/internal/task"
@@ -32,6 +34,8 @@ type Deps struct {
 	Logger   *slog.Logger
 	// Now 可注入以便测试；nil 时使用 time.Now。
 	Now func() time.Time
+	// Git 是 GitOps 可选模式的本地仓库只读访问器（nil = 内置模式）。
+	Git *gitsource.Repo
 }
 
 func (d *Deps) now() time.Time {
@@ -112,6 +116,13 @@ func NewTools(d *Deps) []tool.Tool {
 	pendingSchema := str("列出所有待审批任务")
 	pendingSchema.Required = nil
 
+	diffSchema := str("获取任务的配置差异（基准 vs 生成，服务端 unified diff）", "task_id")
+	addProp(diffSchema, "task_id", "string", "任务 ID")
+
+	gitCfgSchema := str("（GitOps）读取 git 仓库中该 Collector 的配置文件内容", "instance_uid")
+	addProp(gitCfgSchema, "instance_uid", "string", "Collector 的 instance_uid")
+	addProp(gitCfgSchema, "ref", "string", "可选：分支/tag/commit（缺省用配置的 GIT_REF）")
+
 	return []tool.Tool{
 		&simpleTool{decl: &tool.Declaration{Name: "list_collectors", Description: "查询 Collector 集群状态", InputSchema: listSchema}, handle: d.handleListCollectors},
 		&simpleTool{decl: &tool.Declaration{Name: "get_collector_config", Description: "获取 Collector 当前生效配置", InputSchema: getCfgSchema}, handle: d.handleGetConfig},
@@ -122,7 +133,123 @@ func NewTools(d *Deps) []tool.Tool {
 		&simpleTool{decl: &tool.Declaration{Name: "approve_task", Description: "审批通过并下发", InputSchema: approveSchema}, handle: d.handleApprove},
 		&simpleTool{decl: &tool.Declaration{Name: "reject_task", Description: "拒绝任务", InputSchema: rejectSchema}, handle: d.handleReject},
 		&simpleTool{decl: &tool.Declaration{Name: "list_pending_tasks", Description: "列出待审批任务", InputSchema: pendingSchema}, handle: d.handleListPending},
+		&simpleTool{decl: &tool.Declaration{Name: "get_task_diff", Description: "获取任务的配置差异（基准 vs 生成）", InputSchema: diffSchema}, handle: d.handleGetTaskDiff},
+		&simpleTool{decl: &tool.Declaration{Name: "get_git_config", Description: "（GitOps）读取 git 中该 Collector 的配置", InputSchema: gitCfgSchema}, handle: d.handleGetGitConfig},
 	}
+}
+
+// 基准来源标注（与 store.Task.BaseSource 一致）。
+const (
+	baseSourceReported = "reported" // Agent 权威上报的 effective config
+	baseSourceStore    = "store"    // 服务端记录的生效配置（可能是下发意图值）
+)
+
+// baseConfigFor 取目标任务（分组或实例）的基准配置与来源。
+//
+// 优先使用 Registry 中"仅由 Agent 上报"的 effective config（F-9：存储层字段被
+// 下发意图值覆盖过，不能代表正在运行的配置），回退到存储层记录并标注来源。
+func (d *Deps) baseConfigFor(ctx context.Context, target string) (string, string) {
+	if target == "" {
+		return "", ""
+	}
+	if yaml, src := d.baseForInstance(ctx, target); yaml != "" {
+		return yaml, src
+	}
+	collectors, _, err := d.Store.ListCollectors(ctx, 0, 0)
+	if err != nil {
+		return "", ""
+	}
+	for _, c := range collectors {
+		if c.GroupID == target {
+			if yaml, src := d.baseForInstance(ctx, c.InstanceUID); yaml != "" {
+				return yaml, src
+			}
+		}
+	}
+	return "", ""
+}
+
+// baseForInstance 取单个实例的基准配置与来源（上报值优先）。
+func (d *Deps) baseForInstance(ctx context.Context, uid string) (string, string) {
+	if d.Registry != nil {
+		if yaml, ok := d.Registry.ReportedEffective(uid); ok && yaml != "" {
+			return yaml, baseSourceReported
+		}
+	}
+	if c, err := d.Store.GetCollector(ctx, uid); err == nil && c.EffectiveConfig != "" {
+		return c.EffectiveConfig, baseSourceStore
+	}
+	return "", ""
+}
+
+// handleGetTaskDiff 实现 get_task_diff：返回任务的基准/生成配置与服务端 unified diff。
+func (d *Deps) handleGetTaskDiff(ctx context.Context, args map[string]any) (any, error) {
+	taskID := getString(args, "task_id")
+	if taskID == "" {
+		return nil, fmt.Errorf("task_id 不能为空")
+	}
+	t, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("任务不存在: %w", err)
+	}
+	if t.GeneratedYAML == "" {
+		return nil, fmt.Errorf("任务 %s 没有可比较的生成配置", taskID)
+	}
+	return map[string]any{
+		"task_id":        t.ID,
+		"base_yaml":      t.BaseYAML,
+		"base_source":    taskBaseSource(t),
+		"generated_yaml": t.GeneratedYAML,
+		"diff":           diff.Unified(t.BaseYAML, t.GeneratedYAML),
+		"has_base":       t.BaseYAML != "",
+	}, nil
+}
+
+// markTaskFailed 尽力把任务标记为 failed（避免状态写入失败导致任务永久停在中间态）。
+func (d *Deps) markTaskFailed(ctx context.Context, taskID, reason string) {
+	if _, err := d.Tasks.SetStatus(ctx, taskID, store.TaskStatusFailed); err != nil {
+		d.log().Error("标记任务失败状态出错（任务可能停留在中间态）", "task_id", taskID, "reason", reason, "error", err)
+		return
+	}
+	d.setTaskError(ctx, taskID, reason)
+}
+
+// handleGetGitConfig 实现 get_git_config：GitOps 模式下按 pathspec 读取仓库中的配置内容。
+func (d *Deps) handleGetGitConfig(ctx context.Context, args map[string]any) (any, error) {
+	uid := getString(args, "instance_uid")
+	if uid == "" {
+		return nil, fmt.Errorf("instance_uid 不能为空")
+	}
+	if d.Git == nil || d.Config == nil || d.Config.ConfigSource != "git" {
+		return nil, fmt.Errorf("未启用 GitOps 模式（CONFIG_SOURCE=git），无法从 git 读取配置")
+	}
+	ref := getString(args, "ref")
+	if ref == "" {
+		ref = d.Config.GitRef
+	}
+	path, err := gitsource.ExpandPathspec(d.Config.GitConfigPathspec, uid)
+	if err != nil {
+		return nil, err
+	}
+	content, err := d.Git.ShowFile(ctx, ref, path)
+	if err != nil {
+		return nil, err
+	}
+	sha, err := d.Git.Resolve(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"instance_uid": uid, "ref": ref, "git_commit": sha, "git_path": path, "yaml": content,
+	}, nil
+}
+
+// taskBaseSource 返回任务基准来源（无基准时空串）。
+func taskBaseSource(t *store.Task) string {
+	if t.BaseYAML == "" {
+		return ""
+	}
+	return t.BaseSource
 }
 
 func getString(args map[string]any, key string) string {
@@ -210,8 +337,11 @@ func (d *Deps) handleGenerateConfig(ctx context.Context, args map[string]any) (a
 		Status:          store.TaskStatusPending,
 		RequireApproval: d.Config.RequireApproval,
 		Input:           desc,
+		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   target,
 	}
+	// 基准快照（F-9）：优先 Agent 上报值，回退服务端记录，并标注来源。
+	t.BaseYAML, t.BaseSource = d.baseConfigFor(ctx, target)
 	if err := d.Tasks.Create(ctx, t); err != nil {
 		return nil, fmt.Errorf("创建任务失败: %w", err)
 	}
@@ -339,6 +469,7 @@ func (d *Deps) handleOptimizeConfig(ctx context.Context, args map[string]any) (a
 	if err != nil {
 		return nil, fmt.Errorf("获取 Collector 失败: %w", err)
 	}
+	baseYAML, baseSource := d.baseForInstance(ctx, uid)
 	contextInfo := fmt.Sprintf("Collector 版本 %s，状态 %s。\n当前生效配置：\n%s",
 		c.Version, c.Status, c.EffectiveConfig)
 	desc := "请分析并优化上述配置"
@@ -351,8 +482,11 @@ func (d *Deps) handleOptimizeConfig(ctx context.Context, args map[string]any) (a
 		Status:          store.TaskStatusPending,
 		RequireApproval: d.Config.RequireApproval,
 		Input:           desc,
+		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   uid,
 	}
+	// 基准快照（F-9）：上报值优先。
+	t.BaseYAML, t.BaseSource = baseYAML, baseSource
 	if err := d.Tasks.Create(ctx, t); err != nil {
 		return nil, fmt.Errorf("创建任务失败: %w", err)
 	}
@@ -424,6 +558,7 @@ func (d *Deps) handleUpgrade(ctx context.Context, args map[string]any) (any, err
 		Status:          store.TaskStatusAwaitingApproval,
 		RequireApproval: true,
 		Input:           fmt.Sprintf("升级 target=%s 到版本 %s", target, version),
+		SessionID:       sessionIDFromCtx(ctx),
 		TargetGroupID:   target,
 	}
 	if err := d.Tasks.Create(ctx, t); err != nil {
@@ -476,7 +611,7 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 	}
 	var unconfirmed []string
 	for _, c := range collectors {
-		confirmed, perr := pushAndConfirm(ctx, d.OpAMP, d.Registry, c.InstanceUID, t.GeneratedYAML, defaultDispatchConfirmTimeout)
+		confirmed, perr := pushAndConfirm(ctx, d.pusherOrNil(), d.registryOrNil(), c.InstanceUID, t.GeneratedYAML, defaultDispatchConfirmTimeout)
 		if perr != nil {
 			d.log().Warn("approve 下发失败", "task_id", taskID, "instance_uid", c.InstanceUID, "error", perr)
 			continue
@@ -487,6 +622,8 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 		d.recordConfigVersion(ctx, c.InstanceUID, t.GeneratedYAML)
 	}
 	if _, err := d.Tasks.SetStatus(ctx, taskID, store.TaskStatusDone); err != nil {
+		// 落库失败（如 SQLite 忙锁）不能让任务停在 applying：尽力标记 failed 并上抛。
+		d.markTaskFailed(ctx, taskID, "完成任务状态写入失败")
 		return nil, err
 	}
 	d.audit(ctx, approver, store.AuditActionApply, taskID, validator.Hash(t.GeneratedYAML))
@@ -502,8 +639,15 @@ func (d *Deps) DispatchApprove(ctx context.Context, taskID, approver string) (an
 
 // dispatchRollback 处理回滚任务审批后的版本下发。
 func (d *Deps) dispatchRollback(ctx context.Context, t *store.Task, approver string) (any, error) {
-	if t.TargetInstanceUID == "" || t.RollbackVersionID == 0 {
-		return nil, fmt.Errorf("回滚任务缺少目标 Collector 或版本信息")
+	if t.TargetInstanceUID == "" {
+		return nil, fmt.Errorf("回滚任务缺少目标 Collector")
+	}
+	// GitOps 回退：内容在创建任务时已从指定 commit 读出并固化在任务上（不依赖内置版本 id）。
+	if t.RollbackVersionID == 0 {
+		if t.GeneratedYAML == "" {
+			return nil, fmt.Errorf("回滚任务缺少可下发的配置内容")
+		}
+		return d.dispatchRollbackContent(ctx, t, t.GeneratedYAML, approver)
 	}
 	versions, _, err := d.Store.ListConfigVersions(ctx, t.TargetInstanceUID, 0, 0)
 	if err != nil {
@@ -523,25 +667,37 @@ func (d *Deps) dispatchRollback(ctx context.Context, t *store.Task, approver str
 	if target.CollectorInstanceUID != t.TargetInstanceUID {
 		return nil, fmt.Errorf("版本 %d 不属于该 Collector", t.RollbackVersionID)
 	}
-	confirmed, perr := pushAndConfirm(ctx, d.OpAMP, d.Registry, t.TargetInstanceUID, target.YAML, defaultDispatchConfirmTimeout)
+	return d.dispatchRollbackContent(ctx, t, target.YAML, approver)
+}
+
+// dispatchRollbackContent 下发回滚内容——内置版本回退与 GitOps 按 commit 回退共用同一路径，
+// 保证生效确认、版本快照与审计口径完全一致（GitOps 时审计带上 git 溯源）。
+func (d *Deps) dispatchRollbackContent(ctx context.Context, t *store.Task, yamlContent, approver string) (any, error) {
+	confirmed, perr := pushAndConfirm(ctx, d.pusherOrNil(), d.registryOrNil(), t.TargetInstanceUID, yamlContent, defaultDispatchConfirmTimeout)
 	if perr != nil {
 		if _, setErr := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusFailed); setErr != nil {
 			d.log().Warn("标记任务失败状态出错", "task_id", t.ID, "error", setErr)
 		}
 		return nil, fmt.Errorf("回滚下发失败: %w", perr)
 	}
-	d.recordConfigVersion(ctx, t.TargetInstanceUID, target.YAML)
+	// 仍写一条内置快照作为"下发记录"（D3 默认）：版本权威在 git，此处只是留痕。
+	d.recordConfigVersion(ctx, t.TargetInstanceUID, yamlContent)
 	if _, err := d.Tasks.SetStatus(ctx, t.ID, store.TaskStatusDone); err != nil {
+		d.markTaskFailed(ctx, t.ID, "完成回滚状态写入失败")
 		return nil, err
 	}
-	d.audit(ctx, approver, store.AuditActionRollback, t.ID, validator.Hash(target.YAML))
+	detail := validator.Hash(yamlContent)
+	if t.GitCommit != "" {
+		detail = fmt.Sprintf("git 溯源 commit=%s path=%s ref=%s; hash=%s", t.GitCommit, t.GitPath, t.GitRef, detail)
+	}
+	d.audit(ctx, approver, store.AuditActionRollback, t.ID, detail)
 	if !confirmed {
 		msg := "已回滚下发，但未收到生效确认（Agent 未回报新配置）"
 		d.setTaskError(ctx, t.ID, msg)
 		d.audit(ctx, approver, store.AuditActionRollback, t.ID, "生效确认超时")
 		d.log().Warn("回滚下发后未收到生效确认", "task_id", t.ID, "instance_uid", t.TargetInstanceUID)
 	}
-	return map[string]any{"task_id": t.ID, "status": string(store.TaskStatusDone), "message": "已回滚到历史版本"}, nil
+	return map[string]any{"task_id": t.ID, "status": string(store.TaskStatusDone), "message": "已回滚到指定版本"}, nil
 }
 
 // setTaskError 在任务上记录非致命告警信息（状态保持 done，error 字段展示原因）。
@@ -603,7 +759,7 @@ func (d *Deps) handleReject(ctx context.Context, args map[string]any) (any, erro
 
 // handleListPending 实现 list_pending_tasks。
 func (d *Deps) handleListPending(ctx context.Context, args map[string]any) (any, error) {
-	tasks, _, err := d.Store.ListTasks(ctx, store.TaskStatusAwaitingApproval, 0, 0)
+	tasks, _, err := d.Store.ListTasks(ctx, store.TaskFilter{Status: store.TaskStatusAwaitingApproval}, 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("查询任务失败: %w", err)
 	}

@@ -32,6 +32,11 @@ jobs:
           npm --prefix web run build
           node web/scripts/embed.mjs
 
+      - name: Frontend typecheck & unit tests（Vitest）
+        run: |
+          npm --prefix web run typecheck
+          npm --prefix web test
+
       - name: Build
         run: go build ./...
 
@@ -84,6 +89,9 @@ jobs:
           npm --prefix web run build
           node web/scripts/embed.mjs
           go build -o bin/cadenza ./cmd/server   # embed 后重编，产物含 UI
+
+      - name: GitOps 可选模式门禁（只读 git + fail-closed + 内置零回归）
+        run: ./tests/gitops-e2e.sh
 
       - name: E2E（simple 鉴权模式）
         run: ./tests/e2e.sh

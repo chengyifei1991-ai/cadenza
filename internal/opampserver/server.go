@@ -110,6 +110,14 @@ func (s *Server) onMessage(ctx context.Context, conn types.Connection, msg *prot
 		s.logger.Error("opamp: 收到空 instance_uid 的消息")
 		return nil
 	}
+	// 服务端重启后注册表为空，而元数据（hostname/version）只在首次连接上报一次：
+	// 若首条消息是不含 AgentDescription 的增量状态，直接用空值覆盖会抹掉已持久化的元数据。
+	// 因此先把存储中的记录回填进注册表，作为"沿用上次"的基底。
+	if _, ok := s.reg.Get(uid); !ok {
+		if prev, err := s.st.GetCollector(ctx, uid); err == nil && prev != nil {
+			s.reg.Upsert(prev, nil)
+		}
+	}
 	c := s.collectorFromMessage(uid, msg)
 	c.LastSeenAt = time.Now().UTC()
 	s.reg.Upsert(c, conn)
@@ -135,9 +143,10 @@ func (s *Server) onMessage(ctx context.Context, conn types.Connection, msg *prot
 		InstanceUid:  msg.InstanceUid,
 		Capabilities: serverCapabilities,
 	}
-	// 尚未收到该 Collector 上报的 effective config（如刚重连、Agent 只发增量状态）时，
-	// 按协议置 ReportFullState 标志要求其上报完整状态——下发生效确认依赖该上报。
-	if _, ok := s.reg.ReportedEffective(uid); !ok {
+	// 缺少关键状态时按协议置 ReportFullState 标志，要求 Agent 上报完整状态：
+	//   - 未收到该 Collector 的 effective config（下发生效确认依赖它）；
+	//   - 或尚无 hostname/version（服务端重启后元数据需要重发，否则页面显示为空）。
+	if _, ok := s.reg.ReportedEffective(uid); !ok || c.Hostname == "" || c.Version == "" {
 		resp.Flags = uint64(protobufs.ServerToAgentFlags_ServerToAgentFlags_ReportFullState)
 	}
 	// HTTP 拉取模式下，若存在待下发配置则随本次响应下发。
@@ -176,14 +185,17 @@ func (s *Server) collectorFromMessage(uid string, msg *protobufs.AgentToServer) 
 			}
 		}
 	}
-	// 健康判定：明确上报才覆盖状态；未上报 health 时置为 unknown（连接在线但未知）。
+	// 健康判定：OpAMP 客户端**仅在健康变化时**才上报 health（心跳/配置上报消息不带），
+	// 因此本消息缺 health 时是"状态未变化"，必须沿用上次结果；只有从未收到过健康信号
+	// （或此前判定为离线后重新连上）才置为 unknown。此前实现把"未上报"当 unknown，
+	// 会被紧随其后的心跳/effective 上报把 healthy 冲掉（实测：collector 活着却在页面上显示未知）。
 	if msg.Health != nil {
 		if msg.Health.Healthy {
 			c.Status = store.CollectorStatusHealthy
 		} else {
 			c.Status = store.CollectorStatusUnhealthy
 		}
-	} else {
+	} else if c.Status == "" || c.Status == store.CollectorStatusOffline {
 		c.Status = store.CollectorStatusUnknown
 	}
 	if msg.EffectiveConfig != nil && msg.EffectiveConfig.ConfigMap != nil {

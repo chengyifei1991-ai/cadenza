@@ -17,7 +17,7 @@ import {
   Typography,
   message,
 } from "antd";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { CommentOutlined, PlusOutlined, RobotOutlined, SendOutlined } from "@ant-design/icons";
 import { api, ApiError } from "../api/client";
 import type { ChatMessage, SessionSummary, Task } from "../api/types";
@@ -35,7 +35,9 @@ const EXAMPLES = [
 
 export default function AssistantPage() {
   const qc = useQueryClient();
-  const [currentId, setCurrentId] = useState<string | null>(null);
+  // 支持 /assistant?session=<id> 深链（任务详情"所属会话"回跳）。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [currentId, setCurrentId] = useState<string | null>(searchParams.get("session"));
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
@@ -47,12 +49,48 @@ export default function AssistantPage() {
     queryFn: () => api.listSessions({ page: 1, page_size: 20 }),
   });
 
+  // 会话消息走 keyset 分页端点（1.1.0-c / F-12）：尾部窗口 + before_id 向前累积，
+  // 不设总量上限（长会话按需翻页，每次 50 条）。
+  const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const history = useQuery({
-    queryKey: ["session", currentId],
-    queryFn: () => api.getSession(currentId as string),
+    queryKey: ["session-messages", currentId],
+    queryFn: () => api.listSessionMessages(currentId as string, { limit: 50 }),
     enabled: Boolean(currentId),
   });
-  const messages: ChatMessage[] = history.data?.messages ?? [];
+
+  // 会话发起的任务（任务↔会话硬绑定）：不再依赖回复文本正则。
+  const boundTasks = useQuery({
+    queryKey: ["session-tasks", currentId],
+    queryFn: () => api.listSessionTasks(currentId as string),
+    enabled: Boolean(currentId),
+  });
+  const tailMessages: ChatMessage[] = history.data?.items ?? [];
+  const messages: ChatMessage[] = [...olderMessages, ...tailMessages];
+  const totalMessages = history.data?.total ?? messages.length;
+  const hasOlder = totalMessages > messages.length;
+  // 合并：会话硬绑定任务在前，文本正则命中且未绑定的任务在后（兼容历史会话）。
+  const boundList: Task[] = boundTasks.data?.items ?? [];
+  const boundIds = new Set(boundList.map((t) => t.id));
+  const linkedTasks: Task[] = [...boundList, ...tracked.filter((t) => !boundIds.has(t.id))];
+
+  useEffect(() => {
+    // URL → state 反向同步：处理浏览器前进/后退，或页面已挂载时参数变化
+    // （任务详情"所属会话"跳转、外部分享链接）。仅在参数有效且与当前不同时切换，
+    // 避免与下方"state → URL"的 effect 互相触发。
+    const fromUrl = searchParams.get("session");
+    if (fromUrl && fromUrl !== currentId) setCurrentId(fromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  useEffect(() => {
+    // 会话切换时同步 URL（便于分享/回跳）。
+    const next = new URLSearchParams(searchParams);
+    if (currentId) next.set("session", currentId);
+    else next.delete("session");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentId]);
 
   useEffect(() => {
     // jsdom 无 scrollTo 实现，做存在性守卫（真实浏览器平滑滚动到最新消息）。
@@ -81,7 +119,8 @@ export default function AssistantPage() {
       if (!currentId && resp.session_id) setCurrentId(resp.session_id);
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["sessions"] }),
-        qc.invalidateQueries({ queryKey: ["session", resp.session_id || currentId] }),
+        qc.invalidateQueries({ queryKey: ["session-messages", resp.session_id || currentId] }),
+        qc.invalidateQueries({ queryKey: ["session-tasks", resp.session_id || currentId] }),
       ]);
     },
     onError: (err: unknown) => {
@@ -93,6 +132,24 @@ export default function AssistantPage() {
     },
   });
 
+  // loadOlder 以"当前最早一条消息 id"为游标向前翻页并累积（keyset，无总量上限）。
+  const loadOlder = async () => {
+    if (!currentId || loadingOlder) return;
+    const oldest = messages[0]?.id;
+    if (!oldest) return;
+    setLoadingOlder(true);
+    try {
+      const page = await api.listSessionMessages(currentId, { before_id: oldest, limit: 50 });
+      if (page.items.length > 0) {
+        setOlderMessages((prev) => [...page.items, ...prev]);
+      }
+    } catch {
+      message.error("加载更早消息失败，请重试");
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
   const send = async (raw?: string) => {
     const text = (raw ?? input).trim();
     if (!text || sending) return;
@@ -102,6 +159,9 @@ export default function AssistantPage() {
     try {
       await chat.mutateAsync(text);
       setInput("");
+    } catch {
+      // 失败态已由 mutation 的 onError 呈现（降级横幅/错误提示）；
+      // 此处吞掉拒绝，避免 fire-and-forget 调用产生未捕获的 Promise 拒绝。
     } finally {
       setSending(false);
     }
@@ -110,11 +170,13 @@ export default function AssistantPage() {
   const pickSession = async (id: string) => {
     setCurrentId(id);
     setTracked([]);
+    setOlderMessages([]); // 切换会话重置已加载的历史页
   };
   const newSession = async () => {
     const resp = await api.createSession();
     setCurrentId(resp.session_id);
     setTracked([]);
+    setOlderMessages([]);
     await qc.invalidateQueries({ queryKey: ["sessions"] });
   };
 
@@ -197,9 +259,28 @@ export default function AssistantPage() {
             ) : history.isLoading ? (
               <Skeleton active />
             ) : (
-              messages.map((m, i) => (
-                <MessageBubble key={i} role={m.role} content={m.content} sending={m.role === "user" && i === messages.length - 1 && sending} />
-              ))
+              <>
+                {hasOlder && (
+                  <div style={{ textAlign: "center", margin: "4px 0" }}>
+                    <Button
+                      size="small"
+                      type="link"
+                      loading={loadingOlder}
+                      onClick={() => void loadOlder()}
+                    >
+                      {`加载更早的消息（已显示 ${messages.length}/${totalMessages} 条）`}
+                    </Button>
+                  </div>
+                )}
+                {messages.map((m, i) => (
+                  <MessageBubble
+                    key={i}
+                    role={m.role}
+                    content={m.content}
+                    sending={m.role === "user" && i === messages.length - 1 && sending}
+                  />
+                ))}
+              </>
             )}
             {sending && (
               <MessageBubble role="assistant" content="" loading />
@@ -220,13 +301,13 @@ export default function AssistantPage() {
             )}
           </div>
 
-          {tracked.length > 0 && (
+          {linkedTasks.length > 0 && (
             <div style={{ margin: "8px 0" }}>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                对话创建/关联的任务：
+                本会话创建/关联的任务：
               </Typography.Text>
               <Space wrap style={{ marginTop: 4 }}>
-                {tracked.map((t) => (
+                {linkedTasks.map((t) => (
                   <Tag key={t.id} icon={<CommentOutlined />} style={{ padding: "2px 8px" }}>
                     <Link to={`/tasks/${t.id}`} style={{ textDecoration: "none" }}>
                       [{TASK_TYPE_LABEL[t.type] ?? t.type}] {TASK_STATUS[t.status]?.label ?? t.status}

@@ -6,6 +6,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -103,11 +106,11 @@ func TestTaskCRUD(t *testing.T) {
 	if got.Status != TaskStatusAwaitingApproval {
 		t.Errorf("UpdateTask 未生效: %q", got.Status)
 	}
-	pending, _, err := st.ListTasks(ctx, TaskStatusAwaitingApproval, 0, 0)
+	pending, _, err := st.ListTasks(ctx, TaskFilter{Status: TaskStatusAwaitingApproval}, 0, 0)
 	if err != nil || len(pending) != 1 {
 		t.Errorf("ListTasks(awaiting) = %v, err = %v", pending, err)
 	}
-	done, _, _ := st.ListTasks(ctx, TaskStatusDone, 0, 0)
+	done, _, _ := st.ListTasks(ctx, TaskFilter{Status: TaskStatusDone}, 0, 0)
 	if len(done) != 0 {
 		t.Errorf("ListTasks(done) 应为空: %v", done)
 	}
@@ -136,12 +139,12 @@ func TestConfigVersionAndAudit(t *testing.T) {
 	if err := st.AppendAudit(ctx, &AuditLog{Actor: "alice", Action: AuditActionApply, Subject: "uid-1", Detail: "hash", CreatedAt: now}); err != nil {
 		t.Fatalf("AppendAudit 失败: %v", err)
 	}
-	logs, _, err := st.ListAudit(ctx, 0, 0, 0)
+	logs, _, err := st.ListAudit(ctx, AuditFilter{}, 0, 0)
 	if err != nil || len(logs) != 1 {
 		t.Errorf("ListAudit = %v, err = %v", logs, err)
 	}
 	// since 过滤。
-	logs, _, _ = st.ListAudit(ctx, logs[0].ID, 0, 0)
+	logs, _, _ = st.ListAudit(ctx, AuditFilter{SinceID: logs[0].ID}, 0, 0)
 	if len(logs) != 0 {
 		t.Errorf("since 过滤后应为空: %v", logs)
 	}
@@ -221,7 +224,7 @@ func TestListTasksPage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items, total, err := st.ListTasks(ctx, tt.status, tt.page, tt.pageSize)
+			items, total, err := st.ListTasks(ctx, TaskFilter{Status: tt.status}, tt.page, tt.pageSize)
 			if err != nil {
 				t.Fatalf("ListTasksPage 失败: %v", err)
 			}
@@ -260,7 +263,7 @@ func TestListAuditPage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items, total, err := st.ListAudit(ctx, tt.since, tt.page, tt.pageSize)
+			items, total, err := st.ListAudit(ctx, AuditFilter{SinceID: tt.since}, tt.page, tt.pageSize)
 			if err != nil {
 				t.Fatalf("ListAuditPage 失败: %v", err)
 			}
@@ -296,5 +299,530 @@ func TestListCollectorsPage(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Errorf("len(items) = %d, want 2", len(items))
+	}
+}
+
+// TestTaskSessionBindingAndFilter 验证任务↔会话绑定：
+//   - session_id 幂等迁移（旧库无该列时自动补齐，旧数据可读且 session_id 为空）；
+//   - TaskFilter 按会话与状态过滤。
+func TestTaskSessionBindingAndFilter(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	st := newTestStore(t)
+
+	// 旧库形态：先建不含 session_id 的 tasks 表并写入历史任务，再走 store 初始化迁移。
+	sqlSt, ok := st.(*sqlStore)
+	if !ok {
+		t.Fatalf("期望 *sqlStore，实际 %T", st)
+	}
+	if _, err := sqlSt.db.Exec(`DROP TABLE tasks`); err != nil {
+		t.Fatalf("drop tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`CREATE TABLE tasks (
+		id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,
+		require_approval INTEGER NOT NULL DEFAULT 1, input TEXT NOT NULL DEFAULT '',
+		generated_yaml TEXT NOT NULL DEFAULT '', target_group_id TEXT NOT NULL DEFAULT '',
+		approvers TEXT NOT NULL DEFAULT '[]', approver TEXT NOT NULL DEFAULT '',
+		reject_reason TEXT NOT NULL DEFAULT '', model_used TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create legacy tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`INSERT INTO tasks (id, type, status, input, created_at, updated_at)
+		VALUES ('legacy-1','generate','pending','旧任务', ?, ?)`, fmtTime(now.Add(-3*time.Hour)), fmtTime(now.Add(-3*time.Hour))); err != nil {
+		t.Fatalf("insert legacy: %v", err)
+	}
+	if err := sqlSt.initSchema(); err != nil {
+		t.Fatalf("initSchema（迁移）失败: %v", err)
+	}
+
+	// 旧数据仍可读，session_id 为空。
+	legacy, err := st.GetTask(ctx, "legacy-1")
+	if err != nil {
+		t.Fatalf("GetTask(legacy): %v", err)
+	}
+	if legacy.SessionID != "" {
+		t.Errorf("旧任务 session_id 应为空，实际 %q", legacy.SessionID)
+	}
+
+	// 绑定会话的任务。
+	bound := &Task{
+		ID: "bound-1", Type: TaskTypeGenerate, Status: TaskStatusAwaitingApproval,
+		SessionID: "sess-123", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateTask(ctx, bound); err != nil {
+		t.Fatalf("CreateTask(bound): %v", err)
+	}
+	got, err := st.GetTask(ctx, "bound-1")
+	if err != nil {
+		t.Fatalf("GetTask(bound): %v", err)
+	}
+	if got.SessionID != "sess-123" {
+		t.Errorf("session_id 回读 = %q, want sess-123", got.SessionID)
+	}
+
+	// 过滤：按会话。
+	items, total, err := st.ListTasks(ctx, TaskFilter{SessionID: "sess-123"}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(session): %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].ID != "bound-1" {
+		t.Errorf("会话过滤结果不符: total=%d items=%+v", total, items)
+	}
+
+	// 过滤：会话 + 状态（命中）。
+	_, total, err = st.ListTasks(ctx, TaskFilter{SessionID: "sess-123", Status: TaskStatusAwaitingApproval}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(session+status): %v", err)
+	}
+	if total != 1 {
+		t.Errorf("会话+状态过滤 total = %d, want 1", total)
+	}
+
+	// 过滤：状态不匹配为空。
+	_, total, err = st.ListTasks(ctx, TaskFilter{SessionID: "sess-123", Status: TaskStatusDone}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(session+done): %v", err)
+	}
+	if total != 0 {
+		t.Errorf("不匹配状态应无结果，total = %d", total)
+	}
+
+	// 过滤：时间区间（仅近 1 小时 → 命中 bound-1，不含 legacy-1）。
+	_, total, err = st.ListTasks(ctx, TaskFilter{Since: now.Add(-time.Hour)}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks(since): %v", err)
+	}
+	if total != 1 {
+		t.Errorf("时间下界过滤 total = %d, want 1", total)
+	}
+
+	// 更新时保留 session_id。
+	bound.Status = TaskStatusDone
+	if err := st.UpdateTask(ctx, bound); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	got, _ = st.GetTask(ctx, "bound-1")
+	if got.SessionID != "sess-123" {
+		t.Errorf("UpdateTask 后 session_id = %q, want sess-123", got.SessionID)
+	}
+}
+
+// TestTaskTimeFilterSecondGranularity 是 F-1 的回归门禁：时间过滤按**秒级半开区间**
+// [since, until+1s) 比较。历史缺陷：RFC3339Nano 变长小数秒 + 字典序比较会在边界静默漏行
+// （since 漏带小数秒的行；until 漏整秒行）。
+func TestTaskTimeFilterSecondGranularity(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	seed := []struct {
+		id string
+		at time.Time
+	}{
+		{id: "whole-second", at: base},                              // 整秒
+		{id: "with-fraction", at: base.Add(500 * time.Millisecond)}, // 带小数秒（同一秒内）
+		{id: "prev-second", at: base.Add(-time.Second)},             // 上一秒
+	}
+	for _, tc := range seed {
+		if err := st.CreateTask(ctx, &Task{
+			ID: tc.id, Type: TaskTypeGenerate, Status: TaskStatusPending,
+			CreatedAt: tc.at, UpdatedAt: tc.at,
+		}); err != nil {
+			t.Fatalf("CreateTask(%s): %v", tc.id, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		filter TaskFilter
+		want   []string
+	}{
+		{
+			name:   "since=整秒边界不漏带小数秒的行",
+			filter: TaskFilter{Since: base},
+			want:   []string{"with-fraction", "whole-second"}, // created_at DESC
+		},
+		{
+			name:   "until=上一秒内不漏整秒行",
+			filter: TaskFilter{Until: base.Add(-500 * time.Millisecond)},
+			want:   []string{"prev-second"},
+		},
+		{
+			name:   "until 上界含其所在整秒（秒级粒度，过宽 <1s 属预期）",
+			filter: TaskFilter{Until: base.Add(200 * time.Millisecond)},
+			want:   []string{"with-fraction", "whole-second", "prev-second"},
+		},
+		{
+			name:   "区间组合 since=…+400ms（秒级下界含该秒）",
+			filter: TaskFilter{Since: base.Add(400 * time.Millisecond)},
+			want:   []string{"with-fraction", "whole-second"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := st.ListTasks(ctx, tc.filter, 0, 0)
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+			got := make([]string, 0, len(items))
+			for _, it := range items {
+				got = append(got, it.ID)
+			}
+			if int(total) != len(tc.want) || len(got) != len(tc.want) {
+				t.Fatalf("命中 %v(total=%d), want %v", got, total, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("命中 %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestAuditFilters 验证审计列表过滤：actor/action/subject 与时间区间（秒级半开），
+// 并确认 since 保持"审计行 id 游标"语义（F-8：不得当作时间戳解析）。
+func TestAuditFilters(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC)
+	seed := []AuditLog{
+		{Actor: "admin", Action: AuditActionApply, Subject: "task-1", Detail: "d1", CreatedAt: base.Add(-2 * time.Hour)},
+		{Actor: "agent", Action: AuditActionGenerate, Subject: "task-2", Detail: "d2", CreatedAt: base.Add(-time.Hour)},
+		{Actor: "admin", Action: AuditActionApprove, Subject: "task-2", Detail: "d3", CreatedAt: base.Add(500 * time.Millisecond)},
+	}
+	for i := range seed {
+		if err := st.AppendAudit(ctx, &seed[i]); err != nil {
+			t.Fatalf("AppendAudit: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		filter AuditFilter
+		want   []string // Detail（按 id DESC）
+	}{
+		{name: "按 actor", filter: AuditFilter{Actor: "admin"}, want: []string{"d3", "d1"}},
+		{name: "按 action", filter: AuditFilter{Action: AuditActionGenerate}, want: []string{"d2"}},
+		{name: "按 subject", filter: AuditFilter{Subject: "task-2"}, want: []string{"d3", "d2"}},
+		{name: "组合 actor+subject", filter: AuditFilter{Actor: "admin", Subject: "task-2"}, want: []string{"d3"}},
+		{name: "时间下界（含带小数秒行）", filter: AuditFilter{From: base.Add(-90 * time.Minute)}, want: []string{"d3", "d2"}},
+		{name: "时间上界（整秒行不被漏掉）", filter: AuditFilter{To: base.Add(-30 * time.Minute)}, want: []string{"d2", "d1"}},
+		{name: "since 为 id 游标（返回更新的记录）", filter: AuditFilter{SinceID: 2}, want: []string{"d3"}},
+		{name: "无匹配", filter: AuditFilter{Actor: "nobody"}, want: []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := st.ListAudit(ctx, tc.filter, 0, 0)
+			if err != nil {
+				t.Fatalf("ListAudit: %v", err)
+			}
+			got := make([]string, 0, len(items))
+			for _, it := range items {
+				got = append(got, it.Detail)
+			}
+			if int(total) != len(tc.want) || len(got) != len(tc.want) {
+				t.Fatalf("命中 %v(total=%d), want %v", got, total, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("命中 %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestListMessagesPaging 验证会话消息 keyset 分页：尾部窗口 / before_id 前翻 / after_id 增量。
+func TestListMessagesPaging(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	now := time.Now().UTC()
+	if err := st.CreateSession(ctx, &ChatSession{ID: "s-msg", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for i := 1; i <= 5; i++ {
+		if err := st.AppendMessage(ctx, "s-msg", ChatMessage{
+			Role: "user", Content: string(rune('a' + i - 1)), CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("AppendMessage(%d): %v", i, err)
+		}
+	}
+	contents := func(items []ChatMessage) []string {
+		out := make([]string, 0, len(items))
+		for _, m := range items {
+			out = append(out, m.Content)
+		}
+		return out
+	}
+	equal := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// 尾部窗口（默认游标）：最后 2 条，升序返回。
+	items, total, err := st.ListMessages(ctx, "s-msg", 0, 0, 2)
+	if err != nil {
+		t.Fatalf("ListMessages(tail): %v", err)
+	}
+	if total != 5 || !equal(contents(items), []string{"d", "e"}) {
+		t.Errorf("尾部窗口 = %v (total=%d), want [d e]", contents(items), total)
+	}
+	if items[0].ID == 0 || items[1].ID <= items[0].ID {
+		t.Errorf("消息应带自增 id 且升序: %+v", items)
+	}
+	// 消息 id 应被 GetSession 一并返回（详情页兼容）。
+	sess, err := st.GetSession(ctx, "s-msg")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if len(sess.Messages) != 5 || sess.Messages[0].ID == 0 {
+		t.Errorf("GetSession 未回填消息 id: %+v", sess.Messages[0])
+	}
+
+	// before_id 向前翻：id < 4 的最后 2 条 → b c。
+	items, _, err = st.ListMessages(ctx, "s-msg", 4, 0, 2)
+	if err != nil {
+		t.Fatalf("ListMessages(before): %v", err)
+	}
+	if !equal(contents(items), []string{"b", "c"}) {
+		t.Errorf("before_id 前翻 = %v, want [b c]", contents(items))
+	}
+
+	// after_id 增量：id > 3 → d e。
+	items, _, err = st.ListMessages(ctx, "s-msg", 0, 3, 50)
+	if err != nil {
+		t.Fatalf("ListMessages(after): %v", err)
+	}
+	if !equal(contents(items), []string{"d", "e"}) {
+		t.Errorf("after_id 增量 = %v, want [d e]", contents(items))
+	}
+
+	// 空会话：0 条。
+	if err := st.CreateSession(ctx, &ChatSession{ID: "s-empty", CreatedAt: now}); err != nil {
+		t.Fatalf("CreateSession(empty): %v", err)
+	}
+	items, total, err = st.ListMessages(ctx, "s-empty", 0, 0, 10)
+	if err != nil || total != 0 || len(items) != 0 {
+		t.Errorf("空会话 = %v(total=%d,err=%v), want 空", contents(items), total, err)
+	}
+}
+
+// TestTaskBaseYAML 验证任务基准配置快照（1.1.0-d）的读写与旧库迁移。
+func TestTaskBaseYAML(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	st := newTestStore(t)
+	sqlSt := st.(*sqlStore)
+
+	// 旧库形态：无 base_yaml 列 → initSchema 迁移补齐，旧行可读（base_yaml 为空）。
+	if _, err := sqlSt.db.Exec(`DROP TABLE tasks`); err != nil {
+		t.Fatalf("drop tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`CREATE TABLE tasks (
+		id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,
+		require_approval INTEGER NOT NULL DEFAULT 1, input TEXT NOT NULL DEFAULT '',
+		generated_yaml TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
+		target_group_id TEXT NOT NULL DEFAULT '', approvers TEXT NOT NULL DEFAULT '[]',
+		approver TEXT NOT NULL DEFAULT '', reject_reason TEXT NOT NULL DEFAULT '',
+		model_used TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create legacy tasks: %v", err)
+	}
+	if _, err := sqlSt.db.Exec(`INSERT INTO tasks (id, type, status, generated_yaml, created_at, updated_at)
+		VALUES ('legacy-base','generate','pending','receivers: {}', ?, ?)`, fmtTime(now), fmtTime(now)); err != nil {
+		t.Fatalf("insert legacy: %v", err)
+	}
+	if err := sqlSt.initSchema(); err != nil {
+		t.Fatalf("initSchema（迁移）失败: %v", err)
+	}
+	legacy, err := st.GetTask(ctx, "legacy-base")
+	if err != nil {
+		t.Fatalf("GetTask(legacy): %v", err)
+	}
+	if legacy.BaseYAML != "" {
+		t.Errorf("旧任务 base_yaml 应为空，实际 %q", legacy.BaseYAML)
+	}
+
+	// 新任务：base_yaml 落库并可回读、更新后保留。
+	tk := &Task{
+		ID: "with-base", Type: TaskTypeGenerate, Status: TaskStatusAwaitingApproval,
+		GeneratedYAML: "b: 2\n", BaseYAML: "a: 1\n", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateTask(ctx, tk); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := st.GetTask(ctx, "with-base")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.BaseYAML != "a: 1\n" {
+		t.Errorf("base_yaml 回读 = %q, want %q", got.BaseYAML, "a: 1\n")
+	}
+	got.Status = TaskStatusDone
+	if err := st.UpdateTask(ctx, got); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	again, _ := st.GetTask(ctx, "with-base")
+	if again.BaseYAML != "a: 1\n" {
+		t.Errorf("UpdateTask 后 base_yaml = %q, want %q", again.BaseYAML, "a: 1\n")
+	}
+	// 列表同样带出 base_yaml。
+	items, _, err := st.ListTasks(ctx, TaskFilter{}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	for _, it := range items {
+		if it.ID == "with-base" && it.BaseYAML == "" {
+			t.Errorf("ListTasks 未返回 base_yaml")
+		}
+	}
+}
+
+// TestTaskEvents 验证任务状态迁移事件（1.1.0-e 埋点）的写入、时间下界过滤与顺序。
+func TestTaskEvents(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	seed := []TaskEvent{
+		{TaskID: "t-a", FromStatus: "", ToStatus: "pending", CreatedAt: base.Add(-2 * time.Hour)},
+		{TaskID: "t-a", FromStatus: "pending", ToStatus: "awaiting_approval", CreatedAt: base.Add(-time.Hour)},
+		// 带小数秒：验证秒级下界不会漏行（与任务/审计同一口径）。
+		{TaskID: "t-a", FromStatus: "awaiting_approval", ToStatus: "applying", CreatedAt: base.Add(500 * time.Millisecond)},
+		{TaskID: "t-a", FromStatus: "applying", ToStatus: "done", CreatedAt: base.Add(30 * time.Second)},
+	}
+	for i := range seed {
+		if err := st.AppendTaskEvent(ctx, &seed[i]); err != nil {
+			t.Fatalf("AppendTaskEvent: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		since time.Time
+		want  int
+	}{
+		{name: "零值返回全部", since: time.Time{}, want: 4},
+		{name: "秒级下界含整秒行", since: base.Add(-time.Hour), want: 3},
+		{name: "秒级下界含带小数秒行", since: base, want: 2},
+		{name: "窗口外为空", since: base.Add(time.Hour), want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			items, err := st.ListTaskEvents(ctx, tc.since)
+			if err != nil {
+				t.Fatalf("ListTaskEvents: %v", err)
+			}
+			if len(items) != tc.want {
+				t.Fatalf("事件数 = %d, want %d", len(items), tc.want)
+			}
+			for i := 1; i < len(items); i++ {
+				if items[i].ID <= items[i-1].ID {
+					t.Errorf("事件应按 id 升序: %+v", []int64{items[i-1].ID, items[i].ID})
+				}
+			}
+		})
+	}
+}
+
+// TestSQLiteLockSettings 回归"database is locked"缺陷：SQLite 必须设置 busy_timeout，
+// 文件库额外启用 WAL（并发写：HTTP 处理器 + OpAMP 状态上报 + 埋点事件）。
+func TestSQLiteLockSettings(t *testing.T) {
+	dir := t.TempDir()
+	st, err := New("sqlite", dir+"/test.db")
+	if err != nil {
+		t.Fatalf("New(sqlite 文件库): %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	sqlSt := st.(*sqlStore)
+
+	var timeout int
+	if err := sqlSt.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("查询 busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", timeout)
+	}
+	var mode string
+	if err := sqlSt.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("查询 journal_mode: %v", err)
+	}
+	if strings.ToLower(mode) != "wal" {
+		t.Errorf("文件库 journal_mode = %q, want wal", mode)
+	}
+
+	// 内存库：仍设置 busy_timeout，但不启用 WAL（内存库不支持）。
+	mem := newTestStore(t).(*sqlStore)
+	if err := mem.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("内存库 busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("内存库 busy_timeout = %d, want 5000", timeout)
+	}
+}
+
+// TestConcurrentWritesNoBusy 回归并发写：多协程同时写任务与状态迁移事件，
+// 不得出现 SQLITE_BUSY（busy_timeout + 有限重试兜底）。
+func TestConcurrentWritesNoBusy(t *testing.T) {
+	dir := t.TempDir()
+	st, err := New("sqlite", dir+"/conc.db")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	const workers, perWorker = 8, 15
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				id := fmt.Sprintf("c-%d-%d", w, i)
+				if err := st.CreateTask(ctx, &Task{
+					ID: id, Type: TaskTypeGenerate, Status: TaskStatusPending,
+					CreatedAt: now, UpdatedAt: now,
+				}); err != nil {
+					errCh <- fmt.Errorf("CreateTask(%s): %w", id, err)
+					return
+				}
+				tk, err := st.GetTask(ctx, id)
+				if err != nil {
+					errCh <- fmt.Errorf("GetTask(%s): %w", id, err)
+					return
+				}
+				tk.Status = TaskStatusDone
+				if err := st.UpdateTask(ctx, tk); err != nil {
+					errCh <- fmt.Errorf("UpdateTask(%s): %w", id, err)
+					return
+				}
+				if err := st.AppendTaskEvent(ctx, &TaskEvent{
+					TaskID: id, FromStatus: "pending", ToStatus: "done", CreatedAt: now,
+				}); err != nil {
+					errCh <- fmt.Errorf("AppendTaskEvent(%s): %w", id, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if isBusyError(err) {
+			t.Fatalf("并发写出现忙锁错误（回归）：%v", err)
+		}
+		t.Fatalf("并发写失败: %v", err)
+	}
+	if _, total, err := st.ListTasks(ctx, TaskFilter{}, 0, 0); err != nil || total != workers*perWorker {
+		t.Errorf("任务总数 = %d (err=%v), want %d", total, err, workers*perWorker)
 	}
 }
