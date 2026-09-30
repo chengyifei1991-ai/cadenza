@@ -16,6 +16,7 @@ import type {
   Stats,
   SystemInfo,
   Task,
+  TaskEventsResponse,
   TaskStatus,
   TaskType,
 } from "./types";
@@ -112,6 +113,10 @@ export const api = {
   },
   getTask(id: string): Promise<Task> {
     return request<Task>(`/api/v1/tasks/${id}`);
+  },
+  /** 任务状态流转时间线（回放 task_events，按事件 id 升序）。 */
+  taskEvents(id: string): Promise<TaskEventsResponse> {
+    return request<TaskEventsResponse>(`/api/v1/tasks/${id}/events`);
   },
   /** 任务级 diff（服务端 unified diff；支持分组目标，无需单实例基准）。 */
   getTaskDiff(id: string): Promise<{

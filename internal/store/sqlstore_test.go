@@ -731,6 +731,62 @@ func TestTaskEvents(t *testing.T) {
 	}
 }
 
+// TestListTaskEventsByTask 验证任务时间线取数（1.2.0 C-a）：
+// 只回放该任务的事件、按 id 升序、limit<=0 用默认上限、limit 生效时截断。
+func TestListTaskEventsByTask(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	// 两个任务交错落事件，验证隔离（不能把别人的事算进自己的时间线）
+	seed := []TaskEvent{
+		{TaskID: "t-x", FromStatus: "", ToStatus: "pending", CreatedAt: base},
+		{TaskID: "t-y", FromStatus: "", ToStatus: "pending", CreatedAt: base},
+		{TaskID: "t-x", FromStatus: "pending", ToStatus: "awaiting_approval", CreatedAt: base.Add(time.Second)},
+		{TaskID: "t-x", FromStatus: "awaiting_approval", ToStatus: "applying", CreatedAt: base.Add(2 * time.Second)},
+		{TaskID: "t-y", FromStatus: "pending", ToStatus: "awaiting_approval", CreatedAt: base.Add(3 * time.Second)},
+	}
+	for i := range seed {
+		if err := st.AppendTaskEvent(ctx, &seed[i]); err != nil {
+			t.Fatalf("AppendTaskEvent: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		taskID string
+		limit  int
+		want   int
+		wantTo string // 首条事件的 to_status
+	}{
+		{name: "默认上限返回该任务全部事件", taskID: "t-x", limit: 0, want: 3, wantTo: "pending"},
+		{name: "limit 生效时截断（取最早的前 2 条）", taskID: "t-x", limit: 2, want: 2, wantTo: "pending"},
+		{name: "隔离其他任务的事件", taskID: "t-y", limit: 0, want: 2, wantTo: "pending"},
+		{name: "无事件任务为空", taskID: "t-none", limit: 0, want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			items, err := st.ListTaskEventsByTask(ctx, tc.taskID, tc.limit)
+			if err != nil {
+				t.Fatalf("ListTaskEventsByTask: %v", err)
+			}
+			if len(items) != tc.want {
+				t.Fatalf("事件数 = %d, want %d", len(items), tc.want)
+			}
+			for i, it := range items {
+				if it.TaskID != tc.taskID {
+					t.Errorf("items[%d].TaskID = %q, want %q", i, it.TaskID, tc.taskID)
+				}
+				if i > 0 && items[i].ID <= items[i-1].ID {
+					t.Errorf("事件应按 id 升序: %d, %d", items[i-1].ID, items[i].ID)
+				}
+			}
+			if tc.want > 0 && items[0].ToStatus != tc.wantTo {
+				t.Errorf("首条 to_status = %q, want %q", items[0].ToStatus, tc.wantTo)
+			}
+		})
+	}
+}
+
 // TestSQLiteLockSettings 回归"database is locked"缺陷：SQLite 必须设置 busy_timeout，
 // 文件库额外启用 WAL（并发写：HTTP 处理器 + OpAMP 状态上报 + 埋点事件）。
 func TestSQLiteLockSettings(t *testing.T) {

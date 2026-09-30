@@ -488,7 +488,44 @@ check_code "window_days=91 越界 → 400" 400
 req GET "/api/v1/stats/ops?window_days=abc" --cookie "$CJ"
 check_code "window_days 非数字 → 400" 400
 
-section "19. 登出"
+section "19. 任务状态流转时间线（1.2.0 C-a）"
+# 第 8 节审批完成的任务：应能回放出多次状态迁移（创建 → 待审批 → 下发中 → 终态）。
+req GET "/api/v1/tasks/$APPLY_ID/events" --cookie "$CJ"
+check_code "任务事件时间线 → 200" 200
+check_contains "含任务 id" "\"task_id\":\"$APPLY_ID\""
+check_contains "含事件列表" '"items"'
+check_contains "含事件状态字段" '"to_status"'
+TL_TOTAL=$(python3 -c "import json;print(json.load(open('$BODY'))['total'])")
+if [ "${TL_TOTAL:-0}" -ge 3 ]; then pass; else fail "已完成任务的时间线事件数应≥3（实际 $TL_TOTAL）"; fi
+TL_ORDER_OK=$(python3 -c "
+import json
+items=json.load(open('$BODY'))['items']
+ids=[i['id'] for i in items]
+print('yes' if ids == sorted(ids) and all(i['task_id']=='$APPLY_ID' for i in items) else 'no')")
+if [ "$TL_ORDER_OK" = "yes" ]; then pass; else fail "时间线应按事件 id 升序且只含本任务事件"; fi
+TL_TERMINAL_OK=$(python3 -c "
+import json
+items=json.load(open('$BODY'))['items']
+tos=[i['to_status'] for i in items]
+print('yes' if 'done' in tos and 'applying' in tos else 'no')")
+if [ "$TL_TERMINAL_OK" = "yes" ]; then pass; else fail "已完成任务的时间线应含 applying 与 done 事件"; fi
+
+# 未审批任务：时间线是事实回放——只有已发生的事件，不得凭空出现终态。
+req GET "/api/v1/tasks/$SESS_TASK_ID/events" --cookie "$CJ"
+check_code "未审批任务时间线 → 200" 200
+TL_NODONE_OK=$(python3 -c "
+import json
+items=json.load(open('$BODY'))['items']
+print('yes' if items and not any(i['to_status']=='done' for i in items) else 'no')")
+if [ "$TL_NODONE_OK" = "yes" ]; then pass; else fail "未进终态的任务不应出现 done 事件"; fi
+
+# 未知任务 → 404；非 GET → 405。
+req GET "/api/v1/tasks/no-such-task/events" --cookie "$CJ"
+check_code "未知任务时间线 → 404" 404
+req POST "/api/v1/tasks/$APPLY_ID/events" --cookie "$CJ" --data '{}'
+check_code "时间线仅支持 GET → 405" 405
+
+section "20. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'
   check_code "登出 → 200" 200

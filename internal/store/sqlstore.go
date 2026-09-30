@@ -713,6 +713,38 @@ func (s *sqlStore) ListTaskEvents(ctx context.Context, since time.Time) ([]TaskE
 	return out, rows.Err()
 }
 
+// ListTaskEventsByTask 返回单个任务的状态迁移事件（任务详情"状态流转"时间线回放），
+// 按 id 升序（同一秒内也稳定）。limit<=0 时默认 200：状态机迁移点有限，不做分页。
+func (s *sqlStore) ListTaskEventsByTask(ctx context.Context, taskID string, limit int) ([]TaskEvent, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, task_id, from_status, to_status, created_at FROM task_events
+		 WHERE task_id = ? ORDER BY id ASC LIMIT ?`, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]TaskEvent, 0, 8)
+	for rows.Next() {
+		var (
+			e       TaskEvent
+			created string
+		)
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.FromStatus, &e.ToStatus, &created); err != nil {
+			return nil, err
+		}
+		ts, err := parseTime(created)
+		if err != nil {
+			return nil, fmt.Errorf("parse created_at: %w", err)
+		}
+		e.CreatedAt = ts
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SessionExists 轻量判断会话是否存在（不加载消息，供列表类端点校验用）。
 func (s *sqlStore) SessionExists(ctx context.Context, id string) (bool, error) {
 	var n int

@@ -156,6 +156,26 @@ export interface Stats {
   sessions_total: number;
 }
 
+/**
+ * 一次任务状态迁移事件（GET /api/v1/tasks/{id}/events，1.2.0 C-a 时间线数据源）。
+ * 事件在状态机迁移时落库，是"事实回放"，不按任务当前状态反推。
+ */
+export interface TaskEvent {
+  id: number;
+  task_id: string;
+  /** 迁移前状态（创建事件为空串）。 */
+  from_status: string;
+  /** 迁移后状态。 */
+  to_status: string;
+  created_at: string;
+}
+
+export interface TaskEventsResponse {
+  task_id: string;
+  items: TaskEvent[];
+  total: number;
+}
+
 /** 一组时长的统计摘要（毫秒，后端 statSummary）。 */
 export interface OpsStatSummary {
   count: number;

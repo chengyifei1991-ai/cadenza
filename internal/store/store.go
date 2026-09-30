@@ -84,6 +84,9 @@ type Store interface {
 	AppendTaskEvent(ctx context.Context, e *TaskEvent) error
 	// ListTaskEvents 返回 since 之后（含）的任务状态迁移事件，按 id 升序。
 	ListTaskEvents(ctx context.Context, since time.Time) (items []TaskEvent, err error)
+	// ListTaskEventsByTask 返回单个任务的状态迁移事件（时间线回放），按 id 升序；
+	// limit<=0 时默认 200（状态机迁移点有限，不需要分页）。
+	ListTaskEventsByTask(ctx context.Context, taskID string, limit int) (items []TaskEvent, err error)
 
 	// CreateSession 创建会话。
 	CreateSession(ctx context.Context, s *ChatSession) error

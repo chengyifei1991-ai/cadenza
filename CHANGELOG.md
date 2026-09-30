@@ -11,6 +11,15 @@
   **回滚次数与平均耗时**；窗口 7/14/30 天可切换，卡片标题带口径说明（审批等待 = 进入待审批→离开；
   下发时长 = 进入 applying→终态）。窗口内无数据时给引导文案而非 `0%` 误导值；接口异常降级为
   单卡提示，不影响其他卡片。（`web/src/components/OpsEfficiencyCard.tsx`，含 vitest 与 UI E2E 断言）
+- **任务状态流转时间线（1.2.0 C-a）**：复用既有 `task_events` 埋点（不新增埋点、不做双写），
+  新增只读端点 `GET /api/v1/tasks/{id}/events`（未知任务 404、非 GET 405、按事件 id 升序、
+  上限 200）与任务详情页「状态流转」时间线：创建 → 待审批 → 下发中 → 终态，逐条显示**相邻间隔时长**，
+  终态后停止轮询、审批/拒绝后立即刷新。时间线是**事实回放**——只展示已发生的事件，
+  不按任务当前状态反推（未进终态的任务不会凭空出现 `done`）。
+  （`internal/store` 新增 `ListTaskEventsByTask`、`internal/api` + `web/src/components/TaskTimeline.tsx`）
+- **1.2.0 特性包设计**：新增 [docs/design-1.2.0.md](./docs/design-1.2.0.md)（C-a 时间线 / C-b 审计导出 /
+  C-c F-18·F-19 收尾 / C-d RBAC / C-e 分组与批量下发 / C-f 暗色与 EN），含决策 D1–D7、
+  数据迁移汇总、里程碑拆分与验收映射（待评审）。
 
 ## [1.1.0] - 2026-09-29
 

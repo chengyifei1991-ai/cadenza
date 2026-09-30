@@ -93,6 +93,10 @@ test("配置编辑器 → 保存并下发 → 审批闭环（done）", async ({ 
   await page.getByRole("button", { name: /审批通过并下发/ }).click();
   await expect(page.getByText("已完成").first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("heading", { name: /^任务 / })).toBeVisible();
+  // 状态流转时间线（1.2.0 C-a）：回放出创建 → 待审批 → 下发中 → 已完成
+  await expect(page.getByText("状态流转")).toBeVisible();
+  await expect(page.getByText("任务创建")).toBeVisible();
+  await expect(page.getByText(/下发生效中 → 已完成/)).toBeVisible({ timeout: 20_000 });
 });
 
 test("AI 助手：演示会话历史可回读", async ({ page }) => {

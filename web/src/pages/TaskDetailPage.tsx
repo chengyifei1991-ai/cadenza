@@ -26,6 +26,7 @@ import type { TaskStatus, TaskType } from "../api/types";
 import { TASK_STATUS, TASK_TYPE_LABEL } from "../lib/status";
 import { fmtDateTime } from "../lib/time";
 import DiffView from "../components/DiffView";
+import TaskTimeline from "../components/TaskTimeline";
 import { parseUnified } from "../lib/diff";
 
 const TERMINAL: TaskStatus[] = ["done", "rejected", "failed"];
@@ -62,6 +63,8 @@ export default function TaskDetailPage() {
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["task", id] });
       await qc.invalidateQueries({ queryKey: ["tasks"] });
+      // 审批即产生新的状态迁移事件，时间线立即刷新（不必等轮询）
+      await qc.invalidateQueries({ queryKey: ["task-events", id] });
       message.success("已审批并触发下发");
     },
     onError: (err: unknown) => {
@@ -76,6 +79,7 @@ export default function TaskDetailPage() {
       setRejectReason("");
       await qc.invalidateQueries({ queryKey: ["task", id] });
       await qc.invalidateQueries({ queryKey: ["tasks"] });
+      await qc.invalidateQueries({ queryKey: ["task-events", id] });
       message.success("已拒绝该任务");
     },
     onError: (err: unknown) => {
@@ -186,6 +190,8 @@ export default function TaskDetailPage() {
           {t.input || "-"}
         </Typography.Paragraph>
       </Card>
+
+      <TaskTimeline taskId={t.id} active={!TERMINAL.includes(t.status)} />
 
       {parsedServerDiff ? (
         <Card

@@ -283,6 +283,30 @@ func (h *Handlers) GetTaskDiff(w http.ResponseWriter, r *http.Request, id string
 	})
 }
 
+// GetTaskEvents 处理 GET /api/v1/tasks/{id}/events：
+// 回放该任务的状态迁移事件（任务详情"状态流转"时间线的数据源）。
+// 时间线是事实回放——事件在状态机迁移时落库，不按任务当前状态反推。
+func (h *Handlers) GetTaskEvents(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	if _, err := h.store.GetTask(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	items, err := h.store.ListTaskEventsByTask(r.Context(), id, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询任务事件失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id": id,
+		"items":   items,
+		"total":   len(items),
+	})
+}
+
 // GetTask 处理 GET /api/v1/tasks/{id}。
 func (h *Handlers) GetTask(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {

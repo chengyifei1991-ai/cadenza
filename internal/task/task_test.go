@@ -110,6 +110,16 @@ func (f *fakeStore) ListTaskEvents(context.Context, time.Time) ([]store.TaskEven
 	return f.events, nil
 }
 
+func (f *fakeStore) ListTaskEventsByTask(_ context.Context, taskID string, _ int) ([]store.TaskEvent, error) {
+	out := make([]store.TaskEvent, 0, len(f.events))
+	for _, e := range f.events {
+		if e.TaskID == taskID {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeStore) ListMessages(context.Context, string, int64, int64, int) ([]store.ChatMessage, int64, error) {
 	return nil, 0, nil
 }
