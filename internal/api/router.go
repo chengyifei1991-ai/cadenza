@@ -123,6 +123,7 @@ func (r *Router) apiMux() *http.ServeMux {
 	mux.HandleFunc("/api/v1/collectors", h.ListCollectors)
 	mux.HandleFunc("/api/v1/collectors/", r.collectorAction)
 	mux.HandleFunc("/api/v1/audit", h.ListAudit)
+	mux.HandleFunc("/api/v1/audit/export", h.ExportAudit)
 	mux.HandleFunc("/api/v1/stats", h.Stats)
 	mux.HandleFunc("/api/v1/stats/ops", h.StatsOps)
 

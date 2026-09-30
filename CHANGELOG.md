@@ -17,6 +17,14 @@
   终态后停止轮询、审批/拒绝后立即刷新。时间线是**事实回放**——只展示已发生的事件，
   不按任务当前状态反推（未进终态的任务不会凭空出现 `done`）。
   （`internal/store` 新增 `ListTaskEventsByTask`、`internal/api` + `web/src/components/TaskTimeline.tsx`）
+- **审计导出（1.2.0 C-b）**：新增 `GET /api/v1/audit/export`（`format=csv`（默认）｜`json`），
+  复用列表筛选（`action`/`actor`/`subject`/`since`/`from`/`to`）。CSV 带表头与 **UTF-8 BOM**
+  （Excel 打开中文不乱码）、文件名带时间戳、`Content-Disposition: attachment`；
+  **超出行数上限（默认 10 万，可参数下调）返回 400 并说明原因**——导出语义是全量快照，
+  宁可报错也不给一份静默截断的"假全量"；**导出动作本身写入审计**（`action=export`，
+  对象记录筛选摘要，谁在何时导出了什么范围可追溯）。前端审计页新增「导出 CSV / 导出 JSON」
+  按钮：按当前筛选导出、失败时展示后端中文原因（如超限提示）、成功提示文件名。
+  （`internal/api/audit_export.go`、`web/src/pages/AuditPage.tsx`）
 - **1.2.0 特性包设计**：新增 [docs/design-1.2.0.md](./docs/design-1.2.0.md)（C-a 时间线 / C-b 审计导出 /
   C-c F-18·F-19 收尾 / C-d RBAC / C-e 分组与批量下发 / C-f 暗色与 EN），含决策 D1–D7、
   数据迁移汇总、里程碑拆分与验收映射（待评审）。

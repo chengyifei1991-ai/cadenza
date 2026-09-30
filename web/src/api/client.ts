@@ -57,6 +57,39 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   return (await resp.json()) as T;
 }
 
+export interface AuditExportParams {
+  actor?: string;
+  action?: AuditAction;
+  subject?: string;
+  from?: string;
+  to?: string;
+  format?: "csv" | "json";
+}
+
+/** 审计导出：返回下载文件名 + Blob（超限时抛带中文原因的 ApiError）。 */
+export interface AuditExportFile {
+  filename: string;
+  blob: Blob;
+}
+
+async function requestBlob(path: string): Promise<AuditExportFile> {
+  const resp = await fetch(`${BASE}${path}`, { method: "GET", credentials: "same-origin" });
+  if (!resp.ok) {
+    let message = `导出失败（${resp.status}）`;
+    try {
+      const body = (await resp.json()) as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      /* 非 JSON 响应 */
+    }
+    throw new ApiError(resp.status, message);
+  }
+  const cd = resp.headers.get("Content-Disposition") ?? "";
+  const m = /filename="([^"]+)"/.exec(cd);
+  const ext = path.includes("format=json") ? "json" : "csv";
+  return { filename: m?.[1] ?? `cadenza-audit.${ext}`, blob: await resp.blob() };
+}
+
 export interface ListParams {
   page?: number;
   page_size?: number;
@@ -207,6 +240,20 @@ export const api = {
     if (params.page) q.set("page", String(params.page));
     if (params.page_size) q.set("page_size", String(params.page_size));
     return request<PageEnvelope<AuditLog>>(`/api/v1/audit?${q}`);
+  },
+  /**
+   * 导出审计（1.2.0 C-b）：复用列表筛选，服务端一次性写出；超出行数上限返回 400。
+   * 浏览器端拿到 Blob 后由调用方触发下载（避免直接导航到 URL 时把错误 JSON 当页面显示）。
+   */
+  exportAudit(params: AuditExportParams = {}): Promise<AuditExportFile> {
+    const q = new URLSearchParams();
+    q.set("format", params.format ?? "csv");
+    if (params.actor) q.set("actor", params.actor);
+    if (params.action) q.set("action", params.action);
+    if (params.subject) q.set("subject", params.subject);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
+    return requestBlob(`/api/v1/audit/export?${q}`);
   },
   listSessions(params: ListParams = {}): Promise<PageEnvelope<SessionSummary>> {
     const q = new URLSearchParams();

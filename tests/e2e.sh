@@ -525,7 +525,31 @@ check_code "未知任务时间线 → 404" 404
 req POST "/api/v1/tasks/$APPLY_ID/events" --cookie "$CJ" --data '{}'
 check_code "时间线仅支持 GET → 405" 405
 
-section "20. 登出"
+section "20. 审计导出（1.2.0 C-b）"
+req GET /api/v1/audit/export --cookie "$CJ"
+check_code "CSV 导出 → 200" 200
+check_contains "CSV 含表头" "id,created_at,actor,action,subject,detail"
+check_contains "CSV 含既有审批动作" "approve"
+req GET "/api/v1/audit/export?format=json" --cookie "$CJ"
+check_code "JSON 导出 → 200" 200
+check_contains "JSON 导出含 items" '"items"'
+check_contains "JSON 导出含总数" '"total"'
+# 超出行数上限：拒绝并给出中文原因（不做静默截断）
+req GET "/api/v1/audit/export?limit=1" --cookie "$CJ"
+check_code "超出行数上限 → 400" 400
+check_contains "超限提示中文原因" "导出范围过大"
+req GET "/api/v1/audit/export?format=xml" --cookie "$CJ"
+check_code "非法 format → 400" 400
+req GET "/api/v1/audit/export?action=nope" --cookie "$CJ"
+check_code "非法 action 参数 → 400" 400
+req POST /api/v1/audit/export --cookie "$CJ" --data '{}'
+check_code "导出仅支持 GET → 405" 405
+# 导出自审计：动作本身可查
+req GET "/api/v1/audit?action=export" --cookie "$CJ"
+check_code "按 action=export 过滤可查导出记录 → 200" 200
+check_contains "导出动作已留痕" '"action":"export"'
+
+section "21. 登出"
 if [ "$E2E_AUTH" = "simple" ]; then
   req POST /api/v1/auth/logout --cookie "$CJ" --data '{}'
   check_code "登出 → 200" 200

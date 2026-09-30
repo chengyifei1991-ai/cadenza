@@ -34,4 +34,5 @@ export const AUDIT_ACTION: Record<string, { label: string; color: string }> = {
   apply: { label: "下发", color: "purple" },
   upgrade: { label: "升级", color: "orange" },
   rollback: { label: "回滚", color: "geekblue" },
+  export: { label: "导出", color: "default" },
 };

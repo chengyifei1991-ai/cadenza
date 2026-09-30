@@ -1,9 +1,22 @@
-// 审计页（M2）：服务端分页审计日志（操作/actor 着色，detail 悬浮全文）。
+// 审计页（M2）：服务端分页审计日志（操作/actor 着色，detail 悬浮全文）+ 导出（1.2.0 C-b）。
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Button, Card, DatePicker, Input, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  Button,
+  Card,
+  DatePicker,
+  Input,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+  message,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { api } from "../api/client";
+import { DownloadOutlined } from "@ant-design/icons";
+import { api, ApiError } from "../api/client";
 import ErrorState from "../components/ErrorState";
 import type { AuditAction, AuditLog } from "../api/types";
 import { AUDIT_ACTION } from "../lib/status";
@@ -35,6 +48,32 @@ export default function AuditPage() {
       }),
   });
   const data = query.data;
+
+  // 导出（C-b）：按当前筛选导出，超限时后端返回 400 的中文原因，这里提示而不是下载半份数据。
+  const exportAudit = useMutation({
+    mutationFn: (format: "csv" | "json") =>
+      api.exportAudit({
+        actor: actor || undefined,
+        action,
+        from: range?.[0],
+        to: range?.[1],
+        format,
+      }),
+    onSuccess: ({ filename, blob }) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      message.success(`已导出 ${filename}`);
+    },
+    onError: (err: unknown) => {
+      message.error(err instanceof ApiError ? err.message : "导出失败，请重试");
+    },
+  });
 
   const columns: ColumnsType<AuditLog> = [
     { title: "时间", dataIndex: "created_at", width: 180, render: fmtDateTime },
@@ -121,6 +160,23 @@ export default function AuditPage() {
         >
           重置
         </Button>
+        <Button
+          icon={<DownloadOutlined />}
+          loading={exportAudit.isPending}
+          onClick={() => exportAudit.mutate("csv")}
+        >
+          导出 CSV
+        </Button>
+        <Button
+          icon={<DownloadOutlined />}
+          loading={exportAudit.isPending}
+          onClick={() => exportAudit.mutate("json")}
+        >
+          导出 JSON
+        </Button>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          导出遵循当前筛选条件，动作本身也会记入审计
+        </Typography.Text>
       </Space>
       {query.isError && <ErrorState onRetry={() => query.refetch()} />}
       <Card>

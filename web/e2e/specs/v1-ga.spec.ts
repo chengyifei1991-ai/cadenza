@@ -1,4 +1,5 @@
-// V1 GA UI 冒烟：登录 → 仪表盘 → Collectors → 配置编辑 → 审批闭环 → AI 助手。
+// V1 GA UI 冒烟：登录 → 仪表盘 → Collectors → 配置编辑 → 审批闭环 → 审计导出 → AI 助手。
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 const ADMIN = { username: "admin", password: "Admin@12345" };
@@ -97,6 +98,22 @@ test("配置编辑器 → 保存并下发 → 审批闭环（done）", async ({ 
   await expect(page.getByText("状态流转")).toBeVisible();
   await expect(page.getByText("任务创建")).toBeVisible();
   await expect(page.getByText(/下发生效中 → 已完成/)).toBeVisible({ timeout: 20_000 });
+});
+
+test("审计页：导出 CSV 真实下载且内容为审计表", async ({ page }) => {
+  await login(page);
+  await page.getByRole("menuitem", { name: /审计/ }).click();
+  await expect(page.getByRole("heading", { name: "审计日志" })).toBeVisible();
+  await expect(page.getByText("导出 CSV")).toBeVisible();
+
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: /导出 CSV/ }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/^cadenza-audit-.+\.csv$/);
+  const content = await readFile(await file.path(), "utf8");
+  expect(content).toContain("id,created_at,actor,action,subject,detail");
+  // 演示库里已有审批/下发记录，导出应含真实动作
+  expect(content).toMatch(/approve|apply|generate/);
 });
 
 test("AI 助手：演示会话历史可回读", async ({ page }) => {

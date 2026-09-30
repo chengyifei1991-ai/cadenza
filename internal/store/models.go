@@ -306,11 +306,13 @@ const (
 	AuditActionUpgrade AuditAction = "upgrade"
 	// AuditActionRollback 表示配置回滚。
 	AuditActionRollback AuditAction = "rollback"
+	// AuditActionExport 表示审计导出（1.2.0 C-b：导出动作本身也留痕）。
+	AuditActionExport AuditAction = "export"
 )
 
 // AuditActions 列出全部合法审计动作（HTTP 层参数校验用）。
 func AuditActions() []string {
-	return []string{"generate", "approve", "reject", "apply", "upgrade", "rollback"}
+	return []string{"generate", "approve", "reject", "apply", "upgrade", "rollback", "export"}
 }
 
 // IsValidAuditAction 判断审计动作取值是否合法（空串表示不过滤，视为合法）。
