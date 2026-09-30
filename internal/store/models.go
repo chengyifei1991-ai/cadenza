@@ -308,11 +308,13 @@ const (
 	AuditActionRollback AuditAction = "rollback"
 	// AuditActionExport 表示审计导出（1.2.0 C-b：导出动作本身也留痕）。
 	AuditActionExport AuditAction = "export"
+	// AuditActionSweep 表示中间态超时巡检收口（1.2.0 C-c / F-18，actor=system）。
+	AuditActionSweep AuditAction = "sweep"
 )
 
 // AuditActions 列出全部合法审计动作（HTTP 层参数校验用）。
 func AuditActions() []string {
-	return []string{"generate", "approve", "reject", "apply", "upgrade", "rollback", "export"}
+	return []string{"generate", "approve", "reject", "apply", "upgrade", "rollback", "export", "sweep"}
 }
 
 // IsValidAuditAction 判断审计动作取值是否合法（空串表示不过滤，视为合法）。

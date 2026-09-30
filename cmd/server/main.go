@@ -144,10 +144,11 @@ func run(logger *slog.Logger) error {
 		WriteTimeout: 30 * time.Second,
 	}
 
-	// 后台任务：定期标记离线 Collector。
+	// 后台任务：定期标记离线 Collector + 中间态超时巡检（F-18：卡住的任务不再永久停留）。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go offlineLoop(ctx, registry)
+	go taskSvc.RunStuckSweeper(ctx, cfg.TaskSweepInterval, cfg.TaskStuckTimeout, logger)
 
 	// 启动 HTTP 服务。
 	errCh := make(chan error, 1)

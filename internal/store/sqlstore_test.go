@@ -882,3 +882,88 @@ func TestConcurrentWritesNoBusy(t *testing.T) {
 		t.Errorf("任务总数 = %d (err=%v), want %d", total, err, workers*perWorker)
 	}
 }
+
+// TestCountTasksByStatusSince 验证按状态聚合（F-19：效率指标改用单查询聚合）：
+// 计数与 ListTasks 派生结果一致，且窗口下界与任务列表同为秒级半开区间。
+func TestCountTasksByStatusSince(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	seed := []struct {
+		id     string
+		status TaskStatus
+		at     time.Time
+	}{
+		{"s-1", TaskStatusDone, base.Add(-3 * time.Hour)},
+		{"s-2", TaskStatusDone, base.Add(-2 * time.Hour)},
+		{"s-3", TaskStatusFailed, base.Add(-time.Hour)},
+		{"s-4", TaskStatusApplying, base},
+		// 带小数秒：验证秒级下界不会漏行（与任务/审计同一口径）
+		{"s-5", TaskStatusDone, base.Add(500 * time.Millisecond)},
+	}
+	for _, s := range seed {
+		if err := st.CreateTask(ctx, &Task{
+			ID: s.id, Type: TaskTypeApply, Status: s.status,
+			CreatedAt: s.at, UpdatedAt: s.at,
+		}); err != nil {
+			t.Fatalf("CreateTask(%s): %v", s.id, err)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		since time.Time
+		want  map[TaskStatus]int64
+	}{
+		{
+			name:  "零值统计全部",
+			since: time.Time{},
+			want:  map[TaskStatus]int64{TaskStatusDone: 3, TaskStatusFailed: 1, TaskStatusApplying: 1},
+		},
+		{
+			name:  "窗口下界含整秒那一行",
+			since: base,
+			want:  map[TaskStatus]int64{TaskStatusApplying: 1, TaskStatusDone: 1},
+		},
+		{
+			name:  "窗口外为空",
+			since: base.Add(time.Hour),
+			want:  map[TaskStatus]int64{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := st.CountTasksByStatusSince(ctx, tc.since)
+			if err != nil {
+				t.Fatalf("CountTasksByStatusSince: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("状态种类 = %d (%v), want %d (%v)", len(got), got, len(tc.want), tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("状态 %s = %d, want %d", k, got[k], v)
+				}
+			}
+			// 与列表口径交叉验证：聚合结果必须等于按同一 since 取回的明细计数
+			items, total, err := st.ListTasks(ctx, TaskFilter{Since: tc.since}, 0, 0)
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+			var sum int64
+			byStatus := map[TaskStatus]int64{}
+			for _, it := range items {
+				byStatus[it.Status]++
+				sum++
+			}
+			if sum != total {
+				t.Fatalf("明细条数 %d != 列表 total %d", sum, total)
+			}
+			for k, v := range byStatus {
+				if got[k] != v {
+					t.Errorf("聚合与明细不一致：状态 %s 聚合=%d 明细=%d", k, got[k], v)
+				}
+			}
+		})
+	}
+}

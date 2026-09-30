@@ -103,6 +103,7 @@ export DEMO_MODE=true                   # 可选：空库注入演示数据（�
 | `GIT_CONFIG_PATHSPEC` | 空 | GitOps 模式必填：仓库内配置路径模板，支持 `{uid}` / `%s` 占位（如 `collectors/{uid}.yaml`） |
 | `GIT_REF` | `HEAD` | GitOps 默认读取的 ref（分支/tag/commit） |
 | `OTELCOL_BIN` / `STRICT_VALIDATE` | `/usr/local/bin/otelcol-contrib` / `false` | otelcol-contrib v0.156.0 深度校验 |
+| `TASK_SWEEP_INTERVAL` / `TASK_STUCK_TIMEOUT` | `60s` / `5m` | 中间态巡检：卡在 `validating`/`applying` 超过阈值的任务收口为 `failed`（写明来源 + 审计 `actor=system`）；`TASK_SWEEP_INTERVAL=0` 关闭 |
 | `LLM_API_KEY` | **必填，无默认** | **使用方自备**：启动时以环境变量提供；程序不内置任何 key，缺失（且未配 `LLM_BACKUP_API_KEY`）**拒绝启动** |
 | `LLM_BASE_URL` / `LLM_MODEL` | `https://api.deepseek.com` / `deepseek-chat` | 主模型（任意 OpenAI 兼容接口：DeepSeek / Ollama / vLLM 等） |
 | `LLM_BACKUP_*` | 空 | 备用模型（failover 第二候选） |

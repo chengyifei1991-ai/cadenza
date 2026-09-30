@@ -115,6 +115,11 @@ type Config struct {
 	// GitRef 是默认读取的 ref（分支/tag/commit），空则用 HEAD。
 	GitRef string
 
+	// TaskSweepInterval 是中间态超时巡检的周期（TASK_SWEEP_INTERVAL，0=关闭）。
+	TaskSweepInterval time.Duration
+	// TaskStuckTimeout 是任务在中间态停留多久算卡住（TASK_STUCK_TIMEOUT）。
+	TaskStuckTimeout time.Duration
+
 	// Web 是 Web 控制台相关配置。
 	Web WebConfig
 }
@@ -135,6 +140,8 @@ func Load() (*Config, error) {
 		GitRepoDir:        os.Getenv("GIT_REPO_DIR"),
 		GitConfigPathspec: os.Getenv("GIT_CONFIG_PATHSPEC"),
 		GitRef:            getEnv("GIT_REF", "HEAD"),
+		TaskSweepInterval: getDuration("TASK_SWEEP_INTERVAL", 60*time.Second),
+		TaskStuckTimeout:  getDuration("TASK_STUCK_TIMEOUT", 5*time.Minute),
 		Web: WebConfig{
 			DisableWeb:         getBool("DISABLE_WEB", false),
 			Dir:                os.Getenv("WEB_DIR"),
@@ -186,6 +193,13 @@ func (c *Config) validate() error {
 	}
 	if err := c.validateGitOps(); err != nil {
 		return err
+	}
+	// 中间态巡检：周期与阈值都不允许为负；周期为 0 表示关闭（合法）。
+	if c.TaskSweepInterval < 0 {
+		return fmt.Errorf("config: TASK_SWEEP_INTERVAL 不能为负（0 表示关闭巡检）")
+	}
+	if c.TaskStuckTimeout < 0 {
+		return fmt.Errorf("config: TASK_STUCK_TIMEOUT 不能为负")
 	}
 	return nil
 }

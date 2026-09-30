@@ -134,6 +134,15 @@ func (f *fakeStore) CountCollectorsByStatus(context.Context) (map[store.Collecto
 func (f *fakeStore) CountTasksByStatus(context.Context) (map[store.TaskStatus]int64, error) {
 	return nil, nil
 }
+func (f *fakeStore) CountTasksByStatusSince(context.Context, time.Time) (map[store.TaskStatus]int64, error) {
+	return nil, nil
+}
+func (f *fakeStore) ListStuckTasks(context.Context, []store.TaskStatus, time.Time) ([]store.Task, error) {
+	return nil, nil
+}
+func (f *fakeStore) FailStuckTask(context.Context, string, store.TaskStatus, time.Time, string) (bool, error) {
+	return false, nil
+}
 func (f *fakeStore) CreateAgentRun(context.Context, *store.AgentRun) error { return nil }
 func (f *fakeStore) UpdateAgentRun(context.Context, *store.AgentRun) error { return nil }
 func (f *fakeStore) AppendAudit(context.Context, *store.AuditLog) error    { return nil }

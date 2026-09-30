@@ -152,27 +152,55 @@ func (h *Handlers) StatsOps(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "查询任务事件失败")
 		return
 	}
-	// 窗口内任务（用于终态分布与回滚归类）；任务量级受窗口约束。
-	tasks, _, err := h.store.ListTasks(r.Context(), store.TaskFilter{Since: since}, 0, 0)
+	// 终态分布与成功率走 SQL 聚合（F-19：此前把窗口内任务全量取回后在内存统计，
+	// 大窗口下会随任务量线性增长；聚合后与任务量无关，只与状态种类数有关）。
+	statusCounts, err := h.store.CountTasksByStatusSince(r.Context(), since)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "查询任务失败")
+		writeError(w, http.StatusInternalServerError, "查询任务统计失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, computeOpsStats(windowDays, tasks, events))
+	// 回滚归类需要任务 id 集合（回滚任务通常远少于窗口内全部任务，按 type 单独取回）。
+	rollbackTasks, _, err := h.store.ListTasks(r.Context(),
+		store.TaskFilter{Since: since, Type: store.TaskTypeRollback}, 0, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询回滚任务失败")
+		return
+	}
+	rollbackIDs := make(map[string]bool, len(rollbackTasks))
+	for _, t := range rollbackTasks {
+		rollbackIDs[t.ID] = true
+	}
+	writeJSON(w, http.StatusOK, computeOpsStats(opsStatsInput{
+		WindowDays:      windowDays,
+		StatusCounts:    statusCounts,
+		RollbackTaskIDs: rollbackIDs,
+		Events:          events,
+	}))
 }
 
-// computeOpsStats 由任务与状态迁移事件计算效率指标（纯函数，便于表驱动测试）。
-func computeOpsStats(windowDays int, tasks []store.Task, events []store.TaskEvent) opsStatsResponse {
-	resp := opsStatsResponse{WindowDays: windowDays}
-	resp.Tasks.Total = len(tasks)
-	for _, t := range tasks {
-		switch t.Status {
+// opsStatsInput 是效率指标聚合的输入（1.2.0 C-c / F-19）：
+// 状态分布来自 SQL 聚合，回滚归类用任务 id 集合，时长分位数仍由事件跨行计算。
+type opsStatsInput struct {
+	WindowDays      int
+	StatusCounts    map[store.TaskStatus]int64
+	RollbackTaskIDs map[string]bool
+	Events          []store.TaskEvent
+}
+
+// computeOpsStats 由任务状态聚合与状态迁移事件计算效率指标（纯函数，便于表驱动测试）。
+func computeOpsStats(in opsStatsInput) opsStatsResponse {
+	resp := opsStatsResponse{WindowDays: in.WindowDays}
+	var total int64
+	for status, n := range in.StatusCounts {
+		total += n
+		switch status {
 		case store.TaskStatusDone:
-			resp.Tasks.Done++
+			resp.Tasks.Done = int(n)
 		case store.TaskStatusFailed:
-			resp.Tasks.Failed++
+			resp.Tasks.Failed = int(n)
 		}
 	}
+	resp.Tasks.Total = int(total)
 	if dispatched := resp.Tasks.Done + resp.Tasks.Failed; dispatched > 0 {
 		resp.Tasks.SuccessRate = float64(resp.Tasks.Done) / float64(dispatched)
 	}
@@ -198,7 +226,7 @@ func computeOpsStats(windowDays int, tasks []store.Task, events []store.TaskEven
 		sp.last = at
 		return sp
 	}
-	for _, e := range events {
+	for _, e := range in.Events {
 		sp := get(e.TaskID, e.CreatedAt)
 		if e.ToStatus == string(store.TaskStatusAwaitingApproval) && sp.enterWait.IsZero() {
 			sp.enterWait = e.CreatedAt
@@ -214,11 +242,9 @@ func computeOpsStats(windowDays int, tasks []store.Task, events []store.TaskEven
 		}
 	}
 	var waitDurations, dispatchDurations, rollbackDurations []time.Duration
-	rollbackTasks := map[string]bool{}
-	for _, t := range tasks {
-		if t.Type == store.TaskTypeRollback {
-			rollbackTasks[t.ID] = true
-		}
+	rollbackTasks := in.RollbackTaskIDs
+	if rollbackTasks == nil {
+		rollbackTasks = map[string]bool{}
 	}
 	for _, sp := range order {
 		if !sp.enterWait.IsZero() && !sp.leaveWait.IsZero() && sp.leaveWait.After(sp.enterWait) {

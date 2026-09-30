@@ -13,6 +13,25 @@ import (
 	"github.com/chengyifei1991-ai/cadenza/internal/store"
 )
 
+// opsInputFromTasks 由任务列表构造聚合输入（测试辅助）：
+// 等价于线上路径——状态分布来自 SQL 聚合、回滚归类来自 type=rollback 的任务集。
+func opsInputFromTasks(windowDays int, tasks []store.Task, events []store.TaskEvent) opsStatsInput {
+	counts := map[store.TaskStatus]int64{}
+	rollbackIDs := map[string]bool{}
+	for _, t := range tasks {
+		counts[t.Status]++
+		if t.Type == store.TaskTypeRollback {
+			rollbackIDs[t.ID] = true
+		}
+	}
+	return opsStatsInput{
+		WindowDays:      windowDays,
+		StatusCounts:    counts,
+		RollbackTaskIDs: rollbackIDs,
+		Events:          events,
+	}
+}
+
 // TestComputeOpsStats 表驱动验证效率指标聚合（纯函数）。
 func TestComputeOpsStats(t *testing.T) {
 	base := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
@@ -92,7 +111,7 @@ func TestComputeOpsStats(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeOpsStats(7, tc.tasks, tc.events)
+			got := computeOpsStats(opsInputFromTasks(7, tc.tasks, tc.events))
 			if got.WindowDays != 7 {
 				t.Errorf("window_days = %d, want 7", got.WindowDays)
 			}

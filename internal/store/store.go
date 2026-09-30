@@ -79,6 +79,15 @@ type Store interface {
 	// ListTasks 按过滤条件分页返回任务列表（created_at 降序）及过滤后总数。
 	// filter 的零值字段表示不过滤；page 从 1 开始；pageSize<=0 时返回全量。
 	ListTasks(ctx context.Context, filter TaskFilter, page, pageSize int) (items []Task, total int64, err error)
+	// ListStuckTasks 返回仍停留在 statuses 中且 updated_at 早于 cutoff 的任务
+	// （中间态超时巡检用；秒级比较与任务/审计过滤同口径）。
+	ListStuckTasks(ctx context.Context, statuses []TaskStatus, cutoff time.Time) (items []Task, err error)
+	// FailStuckTask 以**条件更新**把仍停留在 from 且 updated_at 早于 cutoff 的任务置为 failed，
+	// 返回是否真的更新成功——任务若已被并发流转（ack 到达/人工处理）则不动，避免覆盖终态。
+	FailStuckTask(ctx context.Context, id string, from TaskStatus, cutoff time.Time, errMsg string) (bool, error)
+	// CountTasksByStatusSince 按状态聚合 since 之后创建的任务数（效率指标用：把窗口内任务
+	// 全量取回后在内存统计改成单查询聚合）。since 为零值时统计全部。
+	CountTasksByStatusSince(ctx context.Context, since time.Time) (counts map[TaskStatus]int64, err error)
 
 	// AppendTaskEvent 追加一条任务状态迁移事件（变更效率埋点，best effort 写入）。
 	AppendTaskEvent(ctx context.Context, e *TaskEvent) error

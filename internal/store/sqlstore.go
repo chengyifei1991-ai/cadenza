@@ -460,6 +460,88 @@ func (s *sqlStore) UpdateTask(ctx context.Context, t *Task) error {
 		t.RejectReason, t.ModelUsed, t.Error, fmtTime(t.UpdatedAt), t.ID)
 }
 
+// ListStuckTasks 返回仍停留在 statuses 中、且 updated_at 早于 cutoff 的任务（中间态超时巡检）。
+// 时间比较统一截断到秒（substr(...,1,19)），与任务/审计过滤同口径。
+func (s *sqlStore) ListStuckTasks(ctx context.Context, statuses []TaskStatus, cutoff time.Time) ([]Task, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, 0, len(statuses))
+	args := make([]any, 0, len(statuses)+1)
+	for _, st := range statuses {
+		placeholders = append(placeholders, "?")
+		args = append(args, string(st))
+	}
+	args = append(args, secondBound(cutoff))
+	query := `
+		SELECT id, type, status, require_approval, input, generated_yaml, base_yaml, base_source,
+			git_commit, git_path, git_ref, session_id, target_group_id,
+			target_instance_uid, rollback_version_id, approvers, approver, reject_reason, model_used, error, created_at, updated_at
+		FROM tasks WHERE status IN (` + strings.Join(placeholders, ",") + `)
+			AND substr(updated_at,1,19) < ? ORDER BY id ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Task, 0)
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
+// FailStuckTask 条件更新：仅当任务仍停留在 from 且 updated_at 早于 cutoff 时才置 failed。
+// 用一条原子 UPDATE 而非"读-改-写"，避免与并发的生效确认/人工操作互相覆盖
+// （ack 恰好在此刻到达时，条件不满足 → 不动，返回 false）。
+func (s *sqlStore) FailStuckTask(ctx context.Context, id string, from TaskStatus, cutoff time.Time, errMsg string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET status = ?, error = ?, updated_at = ?
+		WHERE id = ? AND status = ? AND substr(updated_at,1,19) < ?`,
+		string(TaskStatusFailed), errMsg, fmtTime(time.Now().UTC()),
+		id, string(from), secondBound(cutoff))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// CountTasksByStatusSince 按状态聚合 since 之后创建的任务数（效率指标：窗口内任务全量取回改为单查询聚合）。
+func (s *sqlStore) CountTasksByStatusSince(ctx context.Context, since time.Time) (map[TaskStatus]int64, error) {
+	query := `SELECT status, COUNT(*) FROM tasks`
+	args := []any{}
+	if !since.IsZero() {
+		query += ` WHERE substr(created_at,1,19) >= ?`
+		args = append(args, secondBound(since))
+	}
+	query += ` GROUP BY status`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[TaskStatus]int64{}
+	for rows.Next() {
+		var (
+			status string
+			n      int64
+		)
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[TaskStatus(status)] = n
+	}
+	return out, rows.Err()
+}
+
 func (s *sqlStore) GetTask(ctx context.Context, id string) (*Task, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, type, status, require_approval, input, generated_yaml, base_yaml, base_source,

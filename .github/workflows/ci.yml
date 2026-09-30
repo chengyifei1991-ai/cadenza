@@ -93,6 +93,9 @@ jobs:
       - name: GitOps 可选模式门禁（只读 git + fail-closed + 内置零回归）
         run: ./tests/gitops-e2e.sh
 
+      - name: 中间态超时巡检门禁（F-18：收口 / 留痕 / 不误伤）
+        run: ./tests/sweep-gate.sh
+
       - name: E2E（simple 鉴权模式）
         run: ./tests/e2e.sh
 
