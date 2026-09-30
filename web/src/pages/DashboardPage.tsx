@@ -21,6 +21,7 @@ import type { Task } from "../api/types";
 import { TASK_STATUS, TASK_TYPE_LABEL } from "../lib/status";
 import { fmtAgo } from "../lib/time";
 import OnboardingModal, { useOnboarding } from "../components/OnboardingModal";
+import OpsEfficiencyCard from "../components/OpsEfficiencyCard";
 
 const POLL = 30_000;
 
@@ -166,6 +167,12 @@ export default function DashboardPage() {
               })}
             />
           </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24}>
+          <OpsEfficiencyCard />
         </Col>
       </Row>
 

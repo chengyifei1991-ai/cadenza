@@ -44,6 +44,27 @@ test("仪表盘（演示模式）：统计与待审批提醒可见，引导可�
   await expect(page.getByText(/memory_limiter（演示，等待审批）|增加内存限制/).first()).toBeVisible();
 });
 
+test("仪表盘：运维效率卡片（F-17）展示埋点指标且窗口可切换", async ({ page }) => {
+  await login(page);
+  await expect(page.getByText("运维效率")).toBeVisible();
+  // 演示库注入了成对的状态迁移事件 → 显示指标而非空态引导
+  await expect(page.getByText(/近 \d+ 天暂无任务数据/)).toHaveCount(0);
+  await expect(page.getByText("下发成功率")).toBeVisible();
+  await expect(page.getByText("审批等待 P50")).toBeVisible();
+  await expect(page.getByText("下发时长 P50")).toBeVisible();
+  await expect(page.getByText("回滚次数")).toBeVisible();
+  // 切窗口（7 → 30 天）触发按新窗口取数
+  // 注：AntD Select 靠 selector 的 mousedown 展开（内层 combobox input 被选中项覆盖），
+  // 故用 dispatchEvent("mousedown") 打开下拉，再点浮层里的选项。
+  const resp = page.waitForResponse((r) => r.url().includes("/api/v1/stats/ops?window_days=30"));
+  await page.locator(".ant-select-selector").first().dispatchEvent("mousedown");
+  await page.locator('.ant-select-item-option[title="近 30 天"]').click();
+  expect((await resp).status()).toBe(200);
+  // 选中项已切换（避开浮层选项与 aria-live 播报的文本重名，按 Select 作用域断言）
+  await expect(page.getByTestId("ops-window").getByTitle("近 30 天")).toBeVisible();
+  await expect(page.getByText("下发成功率")).toBeVisible();
+});
+
 test("Collectors → 详情 → 版本历史（回滚按钮/当前禁用）", async ({ page }) => {
   await login(page);
   await page.getByRole("menuitem", { name: /Collectors/ }).click();

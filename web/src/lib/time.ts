@@ -20,3 +20,14 @@ export function fmtDateTime(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString("zh-CN", { hour12: false });
 }
+
+/** 毫秒时长的人读格式（运维效率指标用：ms → s → 分钟 → 小时）；非法/负值返回 "-"。 */
+export function fmtDurationMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || Number.isNaN(ms) || ms < 0) return "-";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)} s`;
+  const min = sec / 60;
+  if (min < 60) return `${min.toFixed(1)} 分钟`;
+  return `${(min / 60).toFixed(1)} 小时`;
+}

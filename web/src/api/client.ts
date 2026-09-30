@@ -10,6 +10,7 @@ import type {
   GitCommit,
   GitStatus,
   Me,
+  OpsStats,
   PageEnvelope,
   SessionSummary,
   Stats,
@@ -241,6 +242,10 @@ export const api = {
   },
   stats(): Promise<Stats> {
     return request<Stats>("/api/v1/stats");
+  },
+  /** 运维效率指标（窗口 1~90 天，缺省 7）。 */
+  statsOps(windowDays = 7): Promise<OpsStats> {
+    return request<OpsStats>(`/api/v1/stats/ops?window_days=${windowDays}`);
   },
 };
 

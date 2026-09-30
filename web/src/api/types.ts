@@ -155,3 +155,24 @@ export interface Stats {
   };
   sessions_total: number;
 }
+
+/** 一组时长的统计摘要（毫秒，后端 statSummary）。 */
+export interface OpsStatSummary {
+  count: number;
+  avg: number;
+  p50: number;
+  p90: number;
+}
+
+/**
+ * 运维效率指标（GET /api/v1/stats/ops，1.1.0-e 埋点 / F-17 前端消费）。
+ * 口径来自任务状态迁移事件（task_events）：
+ * 审批等待 = 进入待审批 → 离开待审批；下发时长 = 进入 applying → 终态。
+ */
+export interface OpsStats {
+  window_days: number;
+  tasks: { total: number; done: number; failed: number; success_rate: number };
+  approval_wait_ms: OpsStatSummary;
+  dispatch_ms: OpsStatSummary;
+  rollback: { count: number; avg_duration_ms: number };
+}

@@ -1,6 +1,6 @@
 // 时间工具单测（fmtAgo 相对时间 / fmtDateTime 本地化）。
 import { describe, expect, it } from "vitest";
-import { fmtAgo, fmtDateTime } from "./time";
+import { fmtAgo, fmtDateTime, fmtDurationMs } from "./time";
 
 const MIN = 60_000;
 const HOUR = 3_600_000;
@@ -43,5 +43,31 @@ describe("fmtDateTime", () => {
   });
   it("非法输入原样返回", () => {
     expect(fmtDateTime("garbage")).toBe("garbage");
+  });
+});
+
+describe("fmtDurationMs（运维效率指标时长格式）", () => {
+  it("毫秒级（<1s）保留 ms", () => {
+    expect(fmtDurationMs(0)).toBe("0 ms");
+    expect(fmtDurationMs(940)).toBe("940 ms");
+  });
+  it("秒级保留一位小数", () => {
+    expect(fmtDurationMs(1000)).toBe("1.0 s");
+    expect(fmtDurationMs(30_000)).toBe("30.0 s");
+    expect(fmtDurationMs(59_400)).toBe("59.4 s");
+  });
+  it("分钟级（≥60s）", () => {
+    expect(fmtDurationMs(60_000)).toBe("1.0 分钟");
+    expect(fmtDurationMs(600_000)).toBe("10.0 分钟");
+  });
+  it("小时级（≥60min）", () => {
+    expect(fmtDurationMs(3_600_000)).toBe("1.0 小时");
+    expect(fmtDurationMs(5_400_000)).toBe("1.5 小时");
+  });
+  it("非法/负值 → -", () => {
+    expect(fmtDurationMs(null)).toBe("-");
+    expect(fmtDurationMs(undefined)).toBe("-");
+    expect(fmtDurationMs(Number.NaN)).toBe("-");
+    expect(fmtDurationMs(-1)).toBe("-");
   });
 });
